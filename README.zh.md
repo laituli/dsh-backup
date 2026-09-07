@@ -131,6 +131,7 @@ dsh plugin --profile web add github:xiaoyuyu6420/dsh-backup
 <details>
 <summary>最近的版本</summary>
 
+- **0.11.1** —— 适配 dsh `0.1.2-rc.1`：跟随 `@deepseek-ai/dsh-settings` 移除 `settingsNamespace`（改用普通 `dsh-backup` 命名空间注册——取值完全一致，原地更新后设置、备份与旧归档全部无损），支持 Web 强制鉴权（303 + HttpOnly cookie），peer 范围放宽为 `^0.1.1-rc.2 || ^0.1.2-rc.1`。双列车真宿主 e2e 各 32/32 通过，另做了 0.11.0 → 0.11.1 原地升级测试（设置保留、旧归档可恢复）。
 - **0.11.0** —— doctor 容器契约校验：首帧必须解出「恰好一行 header、单个换行结尾」（字节精确，对齐宿主读端）。单帧重写、首帧多余空行、缺行尾、skippable 帧现在都会判损坏（此前报健康但宿主拒载）；救援台同步。来自 deepseek-harness 官方讨论区 #1047 的社区审计。
 - **0.10.0** —— 分类型备份：只备份需要的部分（`/backup --types skills,sessions`），按类型 merge 恢复（`/backup restore <归档> --types skills`）；类型归档独立轮换不挤全量配额。含凭据的类型归档永不进 GitHub 同步，跨机护栏不变。
 - **0.9.1** —— 面板新增反馈入口；README 重做。六路 agent UX 深审后的加固：恢复确认按钮补主题色兜底重新可见、修复恢复快照时自毁目标快照的 bug、双击救援启动器自动探测 node、报错文案全面改为"人话 + 下一步"。
