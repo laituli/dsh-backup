@@ -27,6 +27,13 @@ const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT || 13131);
 const BASE = `http://127.0.0.1:${PORT}`;
 const BOOT_TIMEOUT_MS = 90_000;
+// 0.1.2-rc.1 起 web 根路径与 API 强制认证：GET /?token=xxx 会 303 并下发
+// HttpOnly cookie（dsh-auth-*），之后的页面与 API 请求都凭 cookie（query token
+// 对 /api 不生效）。waitBoot 负责解析 token 并换 cookie，req() 统一带上。
+let bootToken = '';
+let authCookie = '';
+const CK = () => (authCookie ? { Cookie: authCookie } : {});
+const req = (url, opts = {}) => fetch(url, { ...opts, headers: { ...(opts.headers || {}), ...CK() } });
 
 const results = [];
 function check(name, ok, detail = '') {
@@ -101,9 +108,26 @@ async function waitBoot() {
       dumpBootLog(`提前退出 code ${bootProc.exitCode}`);
       throw new Error(`dsh web 提前退出 (code ${bootProc.exitCode})——见上方 boot 日志`);
     }
+    // 0.1.2-rc.1 起强制认证：从 boot 日志行 "dsh web: http://...?token=xxx" 解析，
+    // GET /?token= 换取 303 + HttpOnly cookie；旧列车（无 token）直接 200。
     try {
-      const res = await fetch(BASE, { signal: AbortSignal.timeout(1500) });
+      const log = fs.readFileSync(bootLogPath, 'utf8');
+      const m = log.match(/dsh web: \S+\?token=(\S+)/);
+      if (m) bootToken = m[1];
+    } catch { /* 日志尚未写入 */ }
+    try {
+      const res = await fetch(bootToken ? `${BASE}/?token=${bootToken}` : BASE, {
+        redirect: 'manual',
+        signal: AbortSignal.timeout(1500),
+      });
       if (res.ok) return res;
+      if (res.status === 303 && bootToken) {
+        const cookies = res.headers.getSetCookie?.() ?? [];
+        authCookie = cookies.map((c) => c.split(';')[0]).join('; ');
+        // 303 只是换 cookie 的一跳，调用方要的是真正的页面——再取一次
+        const page = await req(BASE, { signal: AbortSignal.timeout(1500) });
+        if (page.ok) return page;
+      }
     } catch { /* 未就绪 */ }
     await new Promise((r) => setTimeout(r, 2000));
   }
@@ -144,7 +168,9 @@ async function main() {
   check('boot 后 webserver 返回 200（cordis 全有或全无通过）', true);
   check(
     'HTML 预加载官方 client 包（客户端列车兼容）',
-    indexHtml.includes('/plugins/@deepseek-ai/dsh-client-modules/client.js'),
+    // 0.1.2-rc.1 起预加载改为批量合并格式 /plugins/??pkg1,pkg2,...&rev=x，
+    // client-modules 是列表中一项；旧列车是单包路径——两种形态都匹配。
+    indexHtml.includes('@deepseek-ai/dsh-client-modules/client.js'),
     'HTML 缺少 dsh-client-modules/client.js 预加载——宿主可能是旧列车或插件树未进 web 组合',
   );
 
@@ -152,7 +178,7 @@ async function main() {
   let rpcDetail = '请求失败';
   let rpcOk = false;
   try {
-    const rpcRes = await fetch(`${BASE}/api/backupPanel/status`, {
+    const rpcRes = await req(`${BASE}/api/backupPanel/status`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -176,7 +202,7 @@ async function main() {
   check('panel RPC backupPanel/status 可调用', rpcOk, rpcDetail);
 
   // ---------- settings seam ----------
-  const settingsRes = await fetch(`${BASE}/dsh-backup/settings`).then((r) => r.json()).catch(() => null);
+  const settingsRes = await req(`${BASE}/dsh-backup/settings`).then((r) => r.json()).catch(() => null);
   const seamPresent = settingsRes && !settingsRes.error && settingsRes.revision !== undefined;
 
   if (!seamPresent) {
@@ -185,7 +211,7 @@ async function main() {
     check('settings GET 返回默认结构', typeof settingsRes.revision === 'number' && settingsRes.hasOverrides === false && Array.isArray(settingsRes.redact));
 
     let cur = settingsRes.revision;
-    const saved = await fetch(`${BASE}/dsh-backup/settings`, {
+    const saved = await req(`${BASE}/dsh-backup/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ revision: cur, keep: 5, destination: path.join(home, 'dest') }),
@@ -193,7 +219,7 @@ async function main() {
     check('POST 保存合并字段并递增 revision', saved.keep === 5 && saved.revision === cur + 1 && saved.hasOverrides === true);
     cur = saved.revision;
 
-    const conflict = await fetch(`${BASE}/dsh-backup/settings`, {
+    const conflict = await req(`${BASE}/dsh-backup/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ revision: settingsRes.revision, keep: 9 }),
@@ -201,7 +227,7 @@ async function main() {
     const conflictBody = await conflict.json();
     check('过期 revision 重放返回 409 且带 actual revision', conflict.status === 409 && conflictBody.revision === cur);
 
-    const invalid = await fetch(`${BASE}/dsh-backup/settings`, {
+    const invalid = await req(`${BASE}/dsh-backup/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ revision: cur, keep: -3 }),
@@ -217,10 +243,10 @@ async function main() {
     await stopBoot();
     startBoot();
     await waitBoot();
-    const persisted = await fetch(`${BASE}/dsh-backup/settings`).then((r) => r.json());
+    const persisted = await req(`${BASE}/dsh-backup/settings`).then((r) => r.json());
     check('重启后用户层持久生效', persisted.keep === 5 && persisted.hasOverrides === true);
 
-    const reset = await fetch(`${BASE}/dsh-backup/settings`, {
+    const reset = await req(`${BASE}/dsh-backup/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reset: true, revision: persisted.revision }),
@@ -236,7 +262,7 @@ async function main() {
   } else {
     const rpc = async (method, args = {}) => {
       try {
-        const res = await fetch(`${BASE}/api/backupPanel/${method}`, {
+        const res = await req(`${BASE}/api/backupPanel/${method}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ type: 'client-request', rpcId: randomUUID(), method: `backupPanel/${method}`, payload: { args } }),
@@ -251,8 +277,8 @@ async function main() {
     };
 
     // 备份目的地指进隔离 home，避免污染开发机真实的备份目录
-    const cur0 = await fetch(`${BASE}/dsh-backup/settings`).then((r) => r.json());
-    await fetch(`${BASE}/dsh-backup/settings`, {
+    const cur0 = await req(`${BASE}/dsh-backup/settings`).then((r) => r.json());
+    await req(`${BASE}/dsh-backup/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ revision: cur0.revision, destination: path.join(home, 'bkdest') }),
