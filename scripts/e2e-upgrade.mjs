@@ -212,7 +212,7 @@ async function main() {
 
   // 老用户的健康会话日志（升级后归档 A 必须还能恢复它）
   const sessRoot = path.join(home, 'sessions', '--upgrade--');
-  const headerLine = JSON.stringify({ type: 'session', version: 0, id: 'sess-upgrade', createdAt: '2026-09-07T00:00:00.000Z', delegationDepth: 0 });
+  const headerLine = JSON.stringify({ type: 'session', version: 0, id: 'sess-upgrade', createdAt: 1757116800000, delegationDepth: 0 });
   const healthy = Buffer.concat([
     zstdCompressSync(`${headerLine}\n`),
     zstdCompressSync(`${JSON.stringify({ type: 'user/message', seq: 0 })}\n${JSON.stringify({ type: 'user/message', seq: 1 })}\n`),

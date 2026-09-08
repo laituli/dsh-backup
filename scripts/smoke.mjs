@@ -257,7 +257,7 @@ function makeTarGz(entries) {
  * 其后每批一帧；packed 行（text-chunks）横跨 seq2..4，随后裸事件接续。
  */
 function makeSessionLogLines(id) {
-  const header = JSON.stringify({ type: 'session', version: 0, id, createdAt: '2026-08-25T00:00:00.000Z', delegationDepth: 0 });
+  const header = JSON.stringify({ type: 'session', version: 0, id, createdAt: 1724544000000, delegationDepth: 0 });
   const ev = (seq) => JSON.stringify({ type: 'user/message', seq });
   const packedRow = JSON.stringify({ type: 'text-chunks', seq0: 2, time0: 1000, data: { turn: 0, step: 0, index: 0, dt: [5, 7], texts: ['a', 'b', 'c'] } });
   return [header, ev(0), ev(1), packedRow, ev(5), ev(6)];
@@ -1279,6 +1279,81 @@ async function main() {
         if (keep) ok(await fs.readFile(path.join(mdsh, 'skills', keep), 'utf8') === 'TAMPERED', '留档内容是覆盖前的篡改值');
       } finally {
         await fs.rm(mdir, { recursive: true, force: true });
+      }
+    }
+
+    // doctor 行级 SessionHeader 校验对齐宿主 isHeaderLine（0.1.2-rc.1 严格超集）：
+    // 八种坏 header 形态各一例 + 一例健康对照，全走多帧 zstd 容器。
+    console.log('21) doctor：SessionHeader 形态负样本（对齐宿主 isHeaderLine）');
+    {
+      const envH = await mkTmpHome();
+      try {
+        const mockH = makeCtx({ home: envH.home, dsh: envH.dsh });
+        plugin(mockH.ctx, {});
+        const sessDir = path.join(envH.dsh, 'sessions', '--hdr--');
+        const { zstdCompressSync: zC } = await import('node:zlib');
+        const zstdOk = typeof zC === 'function';
+        const goodHeader = JSON.stringify({ type: 'session', version: 0, id: 'hdr-good', createdAt: 1724544000000, delegationDepth: 0 });
+        const badHeaders = [
+          ['hdr-missing-type', JSON.stringify({ version: 0, id: 'x', createdAt: 1724544000000, delegationDepth: 0 })],
+          ['hdr-no-id', JSON.stringify({ type: 'session', version: 0, createdAt: 1724544000000, delegationDepth: 0 })],
+          ['hdr-int-agentPreset', JSON.stringify({ type: 'session', version: 0, id: 'x', createdAt: 1724544000000, delegationDepth: 0, agentPreset: 42 })],
+          ['hdr-wrong-type', JSON.stringify({ type: 'foo', version: 0, id: 'x', createdAt: 1724544000000, delegationDepth: 0 })],
+          ['hdr-no-version', JSON.stringify({ type: 'session', id: 'x', createdAt: 1724544000000, delegationDepth: 0 })],
+          ['hdr-string-createdAt', JSON.stringify({ type: 'session', version: 0, id: 'x', createdAt: '2026-08-25T00:00:00.000Z', delegationDepth: 0 })],
+          ['hdr-neg-depth', JSON.stringify({ type: 'session', version: 0, id: 'x', createdAt: 1724544000000, delegationDepth: -1 })],
+          ['hdr-retired', JSON.stringify({ type: 'session', version: 0, id: 'x', createdAt: 1724544000000, delegationDepth: 0, sandboxMode: true })],
+          ['hdr-bad-origin', JSON.stringify({ type: 'session', version: 0, id: 'x', createdAt: 1724544000000, delegationDepth: 0, origin: 'other' })],
+          ['hdr-float-seedLength', JSON.stringify({ type: 'session', version: 0, id: 'x', createdAt: 1724544000000, delegationDepth: 0, seedLength: 1.5 })],
+          ['hdr-no-createdAt', JSON.stringify({ type: 'session', version: 0, id: 'x', delegationDepth: 0 })],
+        ];
+        const evLine = JSON.stringify({ type: 'user/message', seq: 0 });
+        const build = (hdr) => zstdOk
+          ? Buffer.concat([zC(`${hdr}\n`), zC(`${evLine}\n`)])
+          : Buffer.from(`placeholder-${hdr.slice(0, 8)}`);
+        // 先把所有 9 个目录都写成健康内容并备份——归档持健康副本，供 doctor --repair 还原
+        for (const [dirName] of [['hdr-good', goodHeader], ...badHeaders]) {
+          await fs.mkdir(path.join(sessDir, dirName), { recursive: true });
+          await fs.writeFile(path.join(sessDir, dirName, 'session.jsonl.zstd'), build(goodHeader));
+        }
+        ok((await mockH.tool().execute({ mode: 'backup' }, {})).ok === true, 'header 形态场景备份成功');
+        // 备份后再覆盖 8 个坏 header 现场（健康对照 hdr-good 不动）
+        for (const [dirName, hdr] of badHeaders) {
+          await fs.writeFile(path.join(sessDir, dirName, 'session.jsonl.zstd'), build(hdr));
+        }
+
+        const scan = await mockH.tool().execute({ mode: 'doctor' }, {});
+        const dump = scan.corrupt.map((c) => `${c.path} ← ${c.reason}`).join(' | ');
+        if (zstdOk) {
+          ok(scan.ok === false && scan.corruptCount === 11, `扫描检出 11 个坏 header（实际 ${scan.corruptCount}）: ${dump}`);
+          ok(scan.corrupt.some((c) => c.path.includes('hdr-wrong-type') && c.reason.includes('type')), `wrong-type 检出: ${dump}`)
+          ok(scan.corrupt.some((c) => c.path.includes('hdr-missing-type') && c.reason.includes('type')), `缺 type 字段不崩溃且检出（snippet undefined 回归锁）: ${dump}`)
+          ok(scan.corrupt.some((c) => c.path.includes('hdr-no-id') && c.reason.includes('id')), `缺 id 检出（review P2 补盲）: ${dump}`)
+          ok(scan.corrupt.some((c) => c.path.includes('hdr-int-agentPreset') && c.reason.includes('agentPreset')), `非字符串 agentPreset 检出（review P2 补盲）: ${dump}`);
+          ok(scan.corrupt.some((c) => c.path.includes('hdr-no-version') && c.reason.includes('version')), `缺 version 检出: ${dump}`);
+          ok(scan.corrupt.some((c) => c.path.includes('hdr-string-createdAt') && c.reason.includes('createdAt')), `字符串 createdAt 检出（旧 bug 形态）: ${dump}`);
+          ok(scan.corrupt.some((c) => c.path.includes('hdr-neg-depth') && c.reason.includes('delegationDepth')), `负 delegationDepth 检出: ${dump}`);
+          ok(scan.corrupt.some((c) => c.path.includes('hdr-retired') && c.reason.includes('退役')), `退役字段 sandboxMode 检出: ${dump}`);
+          ok(scan.corrupt.some((c) => c.path.includes('hdr-bad-origin') && c.reason.includes('origin')), `坏 origin 检出: ${dump}`);
+          ok(scan.corrupt.some((c) => c.path.includes('hdr-float-seedLength') && c.reason.includes('seedLength')), `非整数 seedLength 检出: ${dump}`);
+          ok(scan.corrupt.some((c) => c.path.includes('hdr-no-createdAt') && c.reason.includes('createdAt')), `缺 createdAt 检出: ${dump}`);
+          ok(!scan.corrupt.some((c) => c.path.includes('hdr-good')), `健康 header 零误报: ${dump}`);
+        } else {
+          ok(scan.skippedCount === 12, `无 zstd 运行时：12 个 .zstd 全部 skipped（实际 ${scan.skippedCount}）`);
+        }
+
+        const repairTargets = zstdOk ? badHeaders.map(([d]) => d) : [];
+        const repair = await mockH.tool().execute({ mode: 'doctor', selector: 'latest', repair: true }, {});
+        if (zstdOk) {
+          ok(repair.ok === true && repair.repaired.length === 11, `定点修复 11 个坏 header（实际 ${repair.repaired.length}）`);
+          for (const dirName of repairTargets) {
+            ok(await fs.readFile(path.join(sessDir, dirName, 'session.jsonl.zstd')).then((b) => b.equals(build(goodHeader))), `${dirName} 已还原为健康 header`);
+          }
+        }
+        const rescan = await mockH.tool().execute({ mode: 'doctor' }, {});
+        ok(rescan.ok === true, `修复后复扫全绿${rescan.ok === false ? `: ${JSON.stringify(rescan.corrupt).slice(0, 160)}` : ''}`);
+      } finally {
+        await fs.rm(envH.dir, { recursive: true, force: true });
       }
     }
 
