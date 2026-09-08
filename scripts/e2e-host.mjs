@@ -287,7 +287,7 @@ async function main() {
     // 会话日志布局对齐 @deepseek-ai/dsh-session-persistence-jsonl：
     // 两份都先写健康内容 → 备份（归档持健康副本）→ 再弄坏一份现场
     const sessRoot = path.join(home, 'sessions', '--e2e--');
-    const headerLine = JSON.stringify({ type: 'session', version: 0, id: 'sess-e2e', createdAt: '2026-08-25T00:00:00.000Z', delegationDepth: 0 });
+    const headerLine = JSON.stringify({ type: 'session', version: 0, id: 'sess-e2e', createdAt: 1724544000000, delegationDepth: 0 });
     const healthy = Buffer.concat([
       zstdCompressSync(`${headerLine}\n`),
       zstdCompressSync(`${JSON.stringify({ type: 'user/message', seq: 0 })}\n${JSON.stringify({ type: 'user/message', seq: 1 })}\n`),
@@ -452,7 +452,7 @@ async function main() {
     const qDir = path.join(home, 'sessions', '--e2e-q--', 'raw-x');
     fs.mkdirSync(qDir, { recursive: true });
     const healthyText = [
-      JSON.stringify({ type: 'session', version: 0, id: 'sess-q', createdAt: '2026-08-26T00:00:00.000Z', delegationDepth: 0 }),
+      JSON.stringify({ type: 'session', version: 0, id: 'sess-q', createdAt: 1724630400000, delegationDepth: 0 }),
       JSON.stringify({ type: 'user/message', seq: 0 }),
       JSON.stringify({ type: 'user/message', seq: 1 }),
     ].join('\n');
