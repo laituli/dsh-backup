@@ -30,7 +30,10 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const BOOT_TIMEOUT_MS = 90_000;
 const OLD_SPEC = process.env.UPGRADE_OLD_SPEC || '@xiaoyuyu6420/dsh-backup@0.11.0';
 const NEW_TARBALL = process.env.UPGRADE_TARBALL || '/tmp/dsh-pack-0111/xiaoyuyu6420-dsh-backup-0.11.1.tgz';
-const NEW_VERSION = '0.11.1';
+const NEW_VERSION = '0.11.2';
+// 旧版期望版本从 UPGRADE_OLD_SPEC 的 @version 段推导（无 @ 段时视为 latest，跳过版本断言）
+const OLD_VERSION = (() => { const m = OLD_SPEC.match(/@([^@/]+)$/); return m ? m[1] : ''; })();
+const SKIP_OLD_VERSION_ASSERT = OLD_VERSION === '';
 const PHASE1_DSH = process.env.PHASE1_DSH || 'dsh';
 const PHASE2_DSH = process.env.PHASE2_DSH || 'dsh';
 
@@ -182,7 +185,11 @@ async function main() {
   console.log('\n[阶段一] 老用户世界：npm 安装 0.11.0');
   run('dsh', ['plugin', '--profile', 'web', 'add', OLD_SPEC], { env: { ...process.env, DSH_HOME: home }, cwd: path.dirname(home) });
   let inst = installedPluginJson();
-  check('旧版 0.11.0 从 npm 安装成功', inst?.json?.version === '0.11.0', `实际: ${inst?.json?.version ?? '未找到'}`);
+  if (SKIP_OLD_VERSION_ASSERT) {
+    console.log(`  ℹ️ 旧版用 latest，跳过版本断言（实际 ${inst?.json?.version}）`);
+  } else {
+    check(`旧版 ${OLD_VERSION} 从 npm 安装成功`, inst?.json?.version === OLD_VERSION, `实际: ${inst?.json?.version ?? '未找到'}`);
+  }
 
   const patchFile = path.join(home, 'profiles', 'web', 'cordis.patch.yml');
   fs.writeFileSync(patchFile, [
