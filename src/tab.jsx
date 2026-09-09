@@ -19,6 +19,8 @@ function mb(size, t) {
 }
 
 /** 渲染「备份」标签页。 */
+/** 部署期恢复默认延时（秒），与宿主 DEFAULTS.deployRestoreDelay 对齐。 */
+const DEFAULTS_DEPLOY_DELAY = 60;
 /** 分类型备份的候选类型（key 与宿主 BACKUP_TYPES 对齐；标签走 locales）。 */
 const TYPE_OPTIONS = [
   ['credentials', 'typeCredentials'],
@@ -43,6 +45,9 @@ export function BackupTab({ panel, t }) {
   // 分类型备份：本次勾选的类型（空集 = 全量备份）
   const [typeSel, setTypeSel] = useState(() => new Set());
   const [syncDeps, setSyncDeps] = useState(false);
+  // 部署期恢复：宿主空闲后由延时外部进程 停宿主→删除(挪旁)→恢复
+  const [deployMode, setDeployMode] = useState(false);
+  const [deployDelayInput, setDeployDelayInput] = useState('');
 
   // 删除两段式确认的自动复位：误触后不响应也不点确认时，6 秒后回到普通按钮，
   // 避免"要么删、要么关弹窗"的死角（UX 审查 P1-9）。
@@ -61,6 +66,7 @@ export function BackupTab({ panel, t }) {
   const [destInput, setDestInput] = useState('');
   const [keepInput, setKeepInput] = useState('');
   const [excludeInput, setExcludeInput] = useState('');
+  const [deployDelaySetInput, setDeployDelaySetInput] = useState('');
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [settingsStatus, setSettingsStatus] = useState(''); // '' | 'saving' | 'saved' | 'error'
   const [settingsMsg, setSettingsMsg] = useState('');
@@ -75,6 +81,7 @@ export function BackupTab({ panel, t }) {
     setDestInput(data.destination || '');
     setKeepInput(data.keep > 0 ? String(data.keep) : '');
     setExcludeInput(Array.isArray(data.exclude) ? data.exclude.join(', ') : '');
+    setDeployDelaySetInput(data.deployRestoreDelay !== undefined ? String(data.deployRestoreDelay) : '');
     setSettingsDirty(false);
   };
 
@@ -140,6 +147,8 @@ export function BackupTab({ panel, t }) {
     // 勾选状态在每次打开预览时重置——取消/Esc/背板退出不会走到 confirmRestore，
     // 残留的勾选会让下一次恢复"默认重装依赖"（review P1-2）
     setSyncDeps(false);
+    setDeployMode(false);
+    setDeployDelayInput('');
     setBusy(`restore:${name}`);
     try {
       const r = await panel.restore(name, true, types);
@@ -167,9 +176,19 @@ export function BackupTab({ panel, t }) {
 
   const confirmRestore = () => {
     const target = pending;
-    const withDeps = syncDeps;
+    const deploy = deployMode;
+    const rawDelay = deployDelayInput.trim();
+    const deployDelay = rawDelay === '' ? undefined : Number(rawDelay);
     setPending(null);
     setSyncDeps(false);
+    setDeployMode(false);
+    setDeployDelayInput('');
+    if (deploy) {
+      // 部署期恢复：不 merge、不 syncDeps——整体 停宿主→删除(挪旁)→恢复
+      void run(`restore:${target.name}`, () => panel.restore(target.name, false, undefined, false, true, deployDelay)).then(reload);
+      return;
+    }
+    const withDeps = syncDeps;
     void run(`restore:${target.name}`, () => panel.restore(target.name, false, target.merge ? target.types : undefined, withDeps)).then(reload);
   };
 
@@ -195,6 +214,7 @@ export function BackupTab({ panel, t }) {
     const prevDestination = settings.destination || '';
     const keep = Number(keepInput);
     const exclude = excludeInput.split(',').map((s) => s.trim()).filter(Boolean);
+    const deployDelay = Number(deployDelaySetInput);
     try {
       const res = await fetch('/dsh-backup/settings', {
         method: 'POST',
@@ -203,6 +223,7 @@ export function BackupTab({ panel, t }) {
           destination: destInput.trim(),
           keep: Number.isFinite(keep) && keep >= 1 ? Math.floor(keep) : 0,
           exclude,
+          deployRestoreDelay: Number.isFinite(deployDelay) && deployDelay >= 0 ? Math.floor(deployDelay) : DEFAULTS_DEPLOY_DELAY,
           revision: settingsRevision,
         }),
       });
@@ -273,6 +294,7 @@ export function BackupTab({ panel, t }) {
     if (field === 'destination') setDestInput(value);
     else if (field === 'keep') setKeepInput(value);
     else if (field === 'exclude') setExcludeInput(value);
+    else if (field === 'deployRestoreDelay') setDeployDelaySetInput(value);
   };
 
   // 保存前客户端校验：给出 inline 原因，而不是静默禁用保存按钮
@@ -283,6 +305,9 @@ export function BackupTab({ panel, t }) {
   }
   if (settingsDirty && keepInput !== '' && (!/^\d+$/.test(keepInput) || Number(keepInput) < 1 || Number(keepInput) > 999)) {
     settingsErrors.push(t('settingsKeepInvalid'));
+  }
+  if (settingsDirty && deployDelaySetInput !== '' && (!/^\d+$/.test(deployDelaySetInput) || Number(deployDelaySetInput) < 0 || Number(deployDelaySetInput) > 3600)) {
+    settingsErrors.push(t('settingsDeployDelayInvalid'));
   }
   const settingsInvalid = settingsErrors.length > 0;
 
@@ -342,6 +367,19 @@ export function BackupTab({ panel, t }) {
                       value={keepInput}
                       onChange={(e) => onSettingsFieldChange('keep', e.target.value)}
                     />
+                  </dd>
+                  <dt>{t('settingsDeployDelayLabel')}</dt>
+                  <dd>
+                    <input
+                      type="number"
+                      className="dsb-input"
+                      min="0"
+                      max="3600"
+                      aria-label={t('settingsDeployDelayLabel')}
+                      value={deployDelaySetInput}
+                      onChange={(e) => onSettingsFieldChange('deployRestoreDelay', e.target.value)}
+                    />
+                    <span className="dsb-hint">{t('settingsDeployDelayHint')}</span>
                   </dd>
                   <dt>{t('settingsExcludeLabel')}</dt>
                   <dd>
@@ -530,16 +568,62 @@ export function BackupTab({ panel, t }) {
                     {pending.preflight.map((s) => <li key={s}>{s}</li>)}
                   </ul>
                 ) : null}
-                <label className="dsb-syncdeps">
-                  <input
-                    type="checkbox"
-                    checked={syncDeps}
-                    disabled={busy !== ''}
-                    onChange={(e) => setSyncDeps(e.target.checked)}
-                  />
-                  {t('syncDepsLabel')}
-                </label>
-                <p className="dsb-status">{syncDeps ? t('restartHintDeps') : t('restartHint')}</p>
+                {pending.merge ? (
+                  <>
+                    <label className="dsb-syncdeps">
+                      <input
+                        type="checkbox"
+                        checked={syncDeps}
+                        disabled={busy !== ''}
+                        onChange={(e) => setSyncDeps(e.target.checked)}
+                      />
+                      {t('syncDepsLabel')}
+                    </label>
+                    <p className="dsb-status">{syncDeps ? t('restartHintDeps') : t('restartHint')}</p>
+                  </>
+                ) : (
+                  <>
+                    <label className="dsb-syncdeps">
+                      <input
+                        type="checkbox"
+                        checked={deployMode}
+                        disabled={busy !== ''}
+                        onChange={(e) => setDeployMode(e.target.checked)}
+                      />
+                      {t('deployModeLabel').replace('{n}', deployDelayInput.trim() === '' ? t('delayDefaultToken') : `${deployDelayInput.trim()}s`)}
+                    </label>
+                    {deployMode ? (
+                      <>
+                        <div className="dsb-row" style={{ marginTop: '6px', gap: '6px' }}>
+                          <span className="dsb-hint">{t('modalDelayLabel')}</span>
+                          <input
+                            type="number"
+                            className="dsb-input"
+                            min="0"
+                            max="3600"
+                            aria-label={t('modalDelayLabel')}
+                            value={deployDelayInput}
+                            onChange={(e) => setDeployDelayInput(e.target.value)}
+                          />
+                        </div>
+                        <p className="dsb-status">{t('deployModeHint')}</p>
+                      </>
+                    ) : (
+                      <>
+                        <label className="dsb-syncdeps">
+                          <input
+                            type="checkbox"
+                            checked={syncDeps}
+                            disabled={busy !== ''}
+                            onChange={(e) => setSyncDeps(e.target.checked)}
+                          />
+                          {t('syncDepsLabel')}
+                        </label>
+                        <p className="dsb-status">{syncDeps ? t('restartHintDeps') : t('restartHint')}</p>
+                      </>
+                    )}
+                  </>
+                )}
                 <div className="dsb-row dsb-modal-actions">
                   <button type="button" className="dsb-btn-secondary" disabled={busy !== ''} onClick={() => setPending(null)}>
                     {t('cancel')}

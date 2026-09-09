@@ -79,6 +79,13 @@ const restoreSchema = z.object({
   willOverwrite: z.array(z.string()).optional(),
   restored: z.number().int().optional(),
   kept: z.array(z.string()).optional(),
+  // 部署期恢复（deploy=true）：宿主武装后返回的凭据
+  deployRestore: z.boolean().optional(),
+  delaySec: z.number().int().optional(),
+  pid: z.number().int().optional(),
+  port: z.number().int().optional(),
+  armFile: z.string().optional(),
+  abortFile: z.string().optional(),
 });
 
 const setAutoSchema = z.object({
@@ -126,6 +133,8 @@ const keepParam = { name: 'keep', wire: 'keep', source: 'json', codec: { mode: '
 const selectorParam = { name: 'selector', wire: 'selector', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-backup/types#selector', schema: z.string().optional() }, acceptsUndefined: true };
 const dryRunParam = { name: 'dryRun', wire: 'dryRun', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-backup/types#dryRun', schema: z.boolean().optional() }, acceptsUndefined: true };
 const syncDepsParam = { name: 'syncDeps', wire: 'syncDeps', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-backup/types#syncDeps', schema: z.boolean().optional() }, acceptsUndefined: true };
+const deployParam = { name: 'deploy', wire: 'deploy', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-backup/types#deploy', schema: z.boolean().optional() }, acceptsUndefined: true };
+const deployDelayParam = { name: 'deployDelay', wire: 'deployDelay', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-backup/types#deployDelay', schema: z.number().int().min(0).optional() }, acceptsUndefined: true };
 const hoursParam = { name: 'hours', wire: 'hours', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-backup/types#hours', schema: z.number().int().min(0).max(720) }, acceptsUndefined: true };
 const repoParam = { name: 'repo', wire: 'repo', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-backup/types#repo', schema: z.string().optional() }, acceptsUndefined: true };
 const typesParam = { name: 'types', wire: 'types', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-backup/types#types', schema: z.array(z.string()).optional() }, acceptsUndefined: true };
@@ -154,7 +163,7 @@ export const BACKUP_REMOTE = Object.freeze({
     strictDescriptor('status', [], statusSchema, false),
     strictDescriptor('backup', [keepParam, typesParam], backupSchema, true),
     strictDescriptor('verify', [selectorParam], verifySchema, true),
-    strictDescriptor('restore', [selectorParam, dryRunParam, typesParam, syncDepsParam], restoreSchema, true),
+    strictDescriptor('restore', [selectorParam, dryRunParam, typesParam, syncDepsParam, deployParam, deployDelayParam], restoreSchema, true),
     strictDescriptor('setAuto', [hoursParam], setAutoSchema, false),
     strictDescriptor('githubStatus', [], githubStatusSchema, false),
     strictDescriptor('githubSyncNow', [], githubSyncSchema, true),
@@ -212,7 +221,7 @@ export function apply(ctx) {
       status: async () => unwrap(await ns().status()),
       backup: async (keep, types) => unwrap(await ns().backup(keep, types)),
       verify: async (selector) => unwrap(await ns().verify(selector)),
-      restore: async (selector, dryRun, types, syncDeps) => unwrap(await ns().restore(selector, dryRun, types, syncDeps)),
+      restore: async (selector, dryRun, types, syncDeps, deploy, deployDelay) => unwrap(await ns().restore(selector, dryRun, types, syncDeps, deploy, deployDelay)),
       setAuto: async (hours) => unwrap(await ns().setAuto(hours)),
       githubStatus: async () => unwrap(await ns().githubStatus()),
       githubSyncNow: async () => unwrap(await ns().githubSyncNow()),

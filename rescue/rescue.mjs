@@ -15,6 +15,8 @@
  *   node rescue.mjs list                  # 列出备份
  *   node rescue.mjs verify [前缀|all]     # 校验完整性（缺省最新一份）
  *   node rescue.mjs restore <前缀|latest> # 恢复预览；加 --yes 执行
+ *   node rescue.mjs deploy-restore <前缀|latest> [--delay N] [--pid N] # 部署停机窗口：
+ *                                         # 延时→停止宿主→删除(挪旁)→恢复（加 --yes 执行；--abort-file 可取消）
  *   node rescue.mjs doctor                # 会话日志体检
  *   node rescue.mjs doctor --repair [前缀] # 从备份定点修复损坏的会话日志
  *   node rescue.mjs --root <目录> …       # 指定备份目录（缺省脚本所在目录）
@@ -28,6 +30,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as zlib from 'node:zlib';
@@ -550,6 +553,136 @@ async function restoreArchive(root, selector, apply) {
   return { dryRun: false, archive: picked.name, files: entries.length, aside, snapshotName, vaultRestored, vaultMissing, summary: lines.join('\n') };
 }
 
+// ---------- 部署期恢复（deploy-restore：延时→停止宿主→删除(挪旁)→恢复） ----------
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function tcpListening(port, host = '127.0.0.1', timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ port, host });
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; sock.destroy(); resolve(v); } };
+    sock.setTimeout(timeoutMs);
+    sock.on('connect', () => finish(true));
+    sock.on('timeout', () => finish(false));
+    sock.on('error', () => finish(false));
+  });
+}
+
+function pidAlive(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  if (IS_WIN) {
+    const r = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH'], { encoding: 'utf8' });
+    return r.status === 0 && String(r.stdout).includes(String(pid));
+  }
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function pidOnPort(port) {
+  if (IS_WIN) {
+    const r = spawnSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8' });
+    if (r.status !== 0) return null;
+    const needle = `:${port}`;
+    for (const line of String(r.stdout).split(/\r?\n/)) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length >= 5 && /^TCP$/i.test(parts[0]) && parts[1]?.endsWith(needle) && /LISTENING/i.test(parts[3])) {
+        const found = Number(parts[4]);
+        if (Number.isFinite(found) && found > 0) return found;
+      }
+    }
+    return null;
+  }
+  try {
+    const r = spawnSync('lsof', ['-tiTCP', String(port), '-sTCP:LISTEN'], { encoding: 'utf8' });
+    if (r.status === 0) {
+      const found = Number(String(r.stdout).trim().split(/\s+/)[0]);
+      if (Number.isFinite(found) && found > 0) return found;
+    }
+  } catch { /* 无 lsof 时按 pid 主路径 */ }
+  return null;
+}
+
+async function killPid(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return;
+  if (IS_WIN) {
+    spawnSync('taskkill', ['/F', '/PID', String(pid)], { encoding: 'utf8' });
+    return;
+  }
+  try { process.kill(pid, 'SIGTERM'); } catch { return; }
+  await sleep(1500);
+  if (pidAlive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* 已退出 */ } }
+}
+
+async function waitPortDown(port, maxWaitMs, settleMs) {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    if (!(await tcpListening(port))) {
+      if (settleMs > 0) await sleep(settleMs);
+      if (!(await tcpListening(port))) return true;
+    }
+    await sleep(500);
+  }
+  return !(await tcpListening(port));
+}
+
+/** 停止宿主：优先按给定 PID；进程已不在时按端口兜底找占用者。 */
+async function stopHostForRestore({ pid, port, maxWaitSec, settleSec }) {
+  const portNum = Number(port) || 3080;
+  const owner = await pidOnPort(portNum);
+  if (owner && pidAlive(owner)) {
+    if (Number.isFinite(pid) && owner !== Number(pid)) console.log(`⚠️ 端口 ${portNum} 被另一进程 PID=${owner} 占用，将一并停止`);
+    if (owner === Number(pid)) console.log(`⏹ 停止宿主进程 PID=${owner}`);
+    await killPid(owner);
+  } else if (pidAlive(Number(pid))) {
+    console.log(`⏹ 停止宿主进程 PID=${pid}`);
+    await killPid(Number(pid));
+  } else {
+    console.log(`ℹ️ 未发现需停止的宿主进程（PID=${pid ?? '-'}，端口 ${portNum} 无监听），继续恢复`);
+  }
+  if (await tcpListening(portNum)) {
+    const down = await waitPortDown(portNum, (maxWaitSec || 120) * 1000, settleSec ?? 8);
+    if (!down) throw new Error(`等待宿主停止超时（端口 ${portNum} 仍在监听），已中止恢复`);
+  }
+  return true;
+}
+
+async function runDeployRestore(root, selector, options) {
+  const delaySec = options.delaySec ?? 60;
+  const settleSec = options.settleSec ?? 8;
+  const maxWaitSec = options.maxWaitSec ?? 120;
+  const port = options.port ?? 3080;
+  const apply = options.apply === true;
+  const armFile = options.armFile;
+  const armTimeoutSec = options.armTimeoutSec ?? 1800;
+  console.log(`🚀 deploy-restore：归档=${selector}  延时=${delaySec}s  端口=${port}  宿主PID=${options.pid ?? '-'}  模式=${apply ? '执行' : '预览'}${armFile ? `  arm文件=${armFile}` : ''}`);
+  const aborted = async () => {
+    if (!options.abortFile) return false;
+    try { await fs.stat(options.abortFile); return true; } catch { return false; }
+  };
+  if (await aborted()) { console.error('❌ 检测到中止文件，deploy-restore 已取消（未做任何写入）'); process.exitCode = 3; return; }
+  // arm 信号量：宿主在「全部聊天轮次停止」后写入本文件，执行器才开始延时倒计时
+  if (armFile) {
+    const deadline = Date.now() + armTimeoutSec * 1000;
+    while (Date.now() < deadline) {
+      try { await fs.stat(armFile); break; } catch { /* 尚未 armed */ }
+      await sleep(2000);
+    }
+    const armed = await fs.stat(armFile).then(() => true, () => false);
+    if (!armed) { console.error(`❌ 等待宿主 armed 超时（${armTimeoutSec}s 内未见 ${armFile}），deploy-restore 已取消`); process.exitCode = 4; return; }
+    console.log('🟢 宿主已确认空闲（arm 文件出现），开始延时倒计时');
+  }
+  if (delaySec > 0) {
+    console.log(`⏳ 延时 ${delaySec}s（宿主保持运行，期间可放中止文件取消）…`);
+    await sleep(delaySec * 1000);
+  }
+  if (await aborted()) { console.error('❌ 延时结束前出现中止文件，deploy-restore 已取消'); process.exitCode = 3; return; }
+  await stopHostForRestore({ pid: options.pid, port, maxWaitSec, settleSec });
+  console.log('📦 宿主已停止，执行恢复…');
+  const r = await restoreArchive(root, selector, apply);
+  console.log(r.summary ?? `📦 恢复预览（未写入）\n  归档: ${r.archive}\n  条目: ${r.files} 项`);
+  if (!apply) console.log(`\n确认无误后执行: node rescue.mjs deploy-restore ${selector} --yes --pid ${options.pid ?? '<宿主PID>'} --delay ${delaySec}`);
+}
+
 // ---------- 救援网页（loopback + 自定义头防 CSRF） ----------
 
 const PAGE = `<!doctype html><html lang="zh"><head><meta charset="utf-8">
@@ -710,14 +843,25 @@ const HELP = `dsh-rescue —— dsh-backup 的进程外救援通道（零依赖�
   node rescue.mjs list                  列出备份
   node rescue.mjs verify [前缀|all]     校验完整性（缺省最新一份）
   node rescue.mjs restore <前缀|latest> 恢复预览；确认无误后加 --yes 执行
+  node rescue.mjs deploy-restore <前缀|latest> [--yes] 部署停机窗口恢复：
+                                          延时→停止宿主→删除(挪旁)→恢复
   node rescue.mjs doctor                会话日志体检
   node rescue.mjs doctor --repair [前缀] 从备份定点修复损坏的会话日志
   node rescue.mjs serve [--port N]      同无参数：启动救援网页
 
 选项:
   --root <目录>    备份目录（缺省 = 本文件所在目录）
-  --yes            restore 的执行确认
-  --port N         网页端口（缺省 13190）`;
+  --yes            restore / deploy-restore 的执行确认
+  --port N         网页端口（缺省 13190）
+  --delay N        deploy-restore 延时秒数（缺省 60；延时期间宿主保持运行）
+  --pid N          deploy-restore 要停止的宿主进程 PID（缺省按 --web-port 找占用者）
+  --web-port N     deploy-restore 的宿主监听端口（缺省 3080）
+  --settle N       宿主停止后的宽限秒数（缺省 8，等待句柄释放）
+  --max-wait N     等待宿主停止上限秒数（缺省 120）
+  --arm-file PATH  deploy-restore 等待此文件出现（宿主确认全部聊天轮次停止后写入）
+                  才开始延时倒计时；不传则立即开始延时
+  --arm-timeout N  arm 等待上限秒数（缺省 1800，超时 exit 4）
+  --abort-file PATH deploy-restore 中止文件（存在则取消，exit 3）`;
 
 async function main() {
   const argv = process.argv.slice(2);
@@ -767,6 +911,25 @@ async function main() {
     console.log(summarizeDoctorScan(r));
     if (r.corruptCount) console.log('\n修复: node rescue.mjs doctor --repair [前缀|latest]');
     if (r.corruptCount) process.exitCode = 1;
+    return;
+  }
+  if (cmd === 'deploy-restore') {
+    const apply = argv.includes('--yes');
+    const argVal = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
+    const num = (name) => { const v = argVal(name); const n = Number(v); return v !== undefined && Number.isFinite(n) && n >= 0 ? n : undefined; };
+    const rawPid = Number(argVal('--pid'));
+    const sel = pos[1] && !String(pos[1]).startsWith('-') ? pos[1] : 'latest';
+    await runDeployRestore(root, sel, {
+      apply,
+      delaySec: num('--delay'),
+      settleSec: num('--settle'),
+      maxWaitSec: num('--max-wait'),
+      port: num('--web-port'),
+      pid: Number.isFinite(rawPid) && rawPid > 0 ? rawPid : undefined,
+      armFile: argVal('--arm-file'),
+      armTimeoutSec: num('--arm-timeout'),
+      abortFile: argVal('--abort-file'),
+    });
     return;
   }
   console.error(`未知命令: ${cmd}\n\n${HELP}`);
