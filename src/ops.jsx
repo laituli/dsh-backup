@@ -229,6 +229,83 @@ export function RestartTab({ panel, t, onBackup }) {
 }
 
 /** 「升级」子页：升级前快照 → 更新 → 重启 → 重启后再备份刷新救援快照。 */
+/**
+ * 前端内升级（个人 fork 用 url#tag 升级；市场按钮只跟 npm，跟不到 tag）：
+ * 成对停机/启动指令置顶（升级前就能复制，因为升级后磁盘前端包变新、面板可能打不开），
+ * 下面是 git 源插件清单与「升级 / 一键全部升级」，跑起来显示阶段进度并可取消。
+ */
+function UpgradeRunner({ panel, t, snap }) {
+  const [plan, setPlan] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [msg, setMsg] = useState('');
+  const job = snap !== null && snap !== undefined ? (snap.upgrade ?? null) : null;
+  const restart = snap !== null && snap !== undefined ? snap.restart : null;
+  const run = (id, fn) => {
+    setBusy(id);
+    setMsg('');
+    void fn().then((r) => setMsg(r && r.summary ? r.summary : '')).catch((e) => setMsg(String(e && e.message ? e.message : e))).finally(() => setBusy(''));
+  };
+  const items = plan !== null && plan !== undefined ? (plan.plugins ?? []) : [];
+  const updatable = items.filter((p) => p.hasUpdate);
+  return (
+    <div className="dsb-card">
+      <h3 className="dsb-heading"><span>{t('upgTitle')}</span></h3>
+      <p className="dsb-hint">{t('upgIntro')}</p>
+      {restart !== null && restart !== undefined && (restart.portableStopCmd || restart.portableRelaunchCmd) ? (
+        <CmdBlock
+          t={t}
+          title={t('upgRestartFirstTitle')}
+          cmd={[restart.portableStopCmd, restart.portableRelaunchCmd].filter(Boolean).join('\n')}
+          hint={t('upgRestartFirstHint')}
+        />
+      ) : null}
+      <div className="dsb-row">
+        <button type="button" className="dsb-btn-secondary" disabled={busy !== ''} onClick={() => run('plan', () => panel.upgradePlan().then((r) => { setPlan(r); return { summary: '' }; }))}>
+          {busy === 'plan' ? t('upgChecking') : t('upgCheck')}
+        </button>
+        <button type="button" className="dsb-btn-secondary" disabled={busy !== '' || updatable.length === 0} onClick={() => run('all', () => panel.upgradeRun('all'))}>
+          {busy === 'all' ? t('upgRunning') : t('upgAll')}
+        </button>
+        {job !== null && job.finishedAt === null ? (
+          <button type="button" className="dsb-btn-secondary" onClick={() => run('cancel', () => panel.cancelUpgrade())}>
+            {t('upgCancel')}
+          </button>
+        ) : null}
+      </div>
+      {items.length > 0 ? (
+        <ul className="dsb-list">
+          {items.map((p) => (
+            <li key={p.name}>
+              {p.name}
+              {'：'}
+              {p.current ?? '?'}
+              {' → '}
+              {p.latest ?? '?'}
+              {p.hasUpdate ? (
+                <button type="button" className="dsb-btn-secondary" disabled={busy !== ''} onClick={() => run('one:' + p.name, () => panel.upgradeRun('one', p.name))}>
+                  {t('upgTo')}
+                  {p.latest}
+                </button>
+              ) : (
+                <span className="dsb-hint">{p.reason ? t('upgUnknown') + p.reason : t('upgLatest')}</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {job !== null ? (
+        <p className="dsb-hint" role="status">
+          {t('upgPhase')}
+          {job.phase}
+          {'｜'}
+          {job.plugins.map((x) => x.name + ':' + x.phase + (x.ok === false && x.reason ? '(' + x.reason + ')' : '')).join('；')}
+        </p>
+      ) : null}
+      {msg !== '' ? <p className="dsb-banner" role="status">{msg}</p> : null}
+    </div>
+  );
+}
+
 export function UpgradeTab({ panel, t, onBackup }) {
   const { snap, failed, retry } = useStatus(panel, t);
   const restart = snap?.restart;
@@ -236,6 +313,7 @@ export function UpgradeTab({ panel, t, onBackup }) {
     <div className="dsb-ops-page">
       <h4 className="dsb-heading">{t('opsUpgradeTitle')}</h4>
       <p className="dsb-hint">{t('opsUpgradeIntro')}</p>
+        <UpgradeRunner panel={panel} t={t} snap={snap} />
 
       <StatusNotice t={t} failed={failed} onRetry={retry} hint={t('opsStatusHint')} />
 

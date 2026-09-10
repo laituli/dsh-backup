@@ -49,6 +49,26 @@ const statusSchema = z.object({
       deps: z.array(z.object({ name: z.string(), spec: z.string(), ref: z.string() })),
     })),
   }).optional(),
+  // 前端内升级任务的阶段快照（null/缺省 = 无任务）
+  upgrade: z.object({
+    kind: z.string(),
+    phase: z.string(),
+    startedAt: z.string(),
+    finishedAt: z.string().nullable(),
+    backupName: z.string().nullable(),
+    restartFile: z.string().nullable(),
+    cancelRequested: z.boolean(),
+    plugins: z.array(z.object({
+      name: z.string(),
+      profile: z.string(),
+      from: z.string().nullable(),
+      to: z.string().nullable(),
+      phase: z.string(),
+      ok: z.boolean().nullable(),
+      reason: z.string().nullable(),
+      spec: z.string().optional(),
+    })),
+  }).nullable().optional(),
   restart: z.object({
     webPort: z.number().int(),
     stopCmd: z.string(),
@@ -153,6 +173,37 @@ const githubPullSchema = z.object({
   total: z.number().int(),
 });
 
+const upgradePlanSchema = z.object({
+  ok: z.boolean(),
+  checkedAt: z.string().optional(),
+  error: z.string().optional(),
+  plugins: z.array(z.object({
+    profile: z.string(),
+    name: z.string(),
+    spec: z.string(),
+    repo: z.string().nullable(),
+    current: z.string().nullable(),
+    latest: z.string().nullable(),
+    hasUpdate: z.boolean(),
+    tagCount: z.number().int().optional(),
+    reason: z.string().nullable(),
+  })),
+});
+
+const upgradeRunSchema = z.object({
+  ok: z.boolean(),
+  summary: z.string(),
+  backupName: z.string().nullable().optional(),
+  restartFile: z.string().nullable().optional(),
+  plugins: z.array(z.object({
+    name: z.string(),
+    to: z.string().nullable(),
+    phase: z.string(),
+    ok: z.boolean().nullable(),
+    reason: z.string().nullable(),
+  })).optional(),
+});
+
 const removeSchema = z.object({
   ok: z.boolean(),
   summary: z.string(),
@@ -164,6 +215,8 @@ const setGithubRepoSchema = z.object({
   summary: z.string(),
 });
 
+const kindParam = { name: 'kind', wire: 'kind', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-backup/types#kind', schema: z.string().optional() }, acceptsUndefined: true };
+const upgradeNameParam = { name: 'name', wire: 'name', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-backup/types#upgradeName', schema: z.string().optional() }, acceptsUndefined: true };
 const keepParam = { name: 'keep', wire: 'keep', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-backup/types#keep', schema: z.number().int().positive().optional() }, acceptsUndefined: true };
 const selectorParam = { name: 'selector', wire: 'selector', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-backup/types#selector', schema: z.string().optional() }, acceptsUndefined: true };
 const dryRunParam = { name: 'dryRun', wire: 'dryRun', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-backup/types#dryRun', schema: z.boolean().optional() }, acceptsUndefined: true };
@@ -207,6 +260,9 @@ export const BACKUP_REMOTE = Object.freeze({
     strictDescriptor('setGithubRepo', [repoParam], setGithubRepoSchema, false),
     // 取消进行中的刚性重试（用户主动中止，不是策略降级）
     strictDescriptor('cancelSync', [], removeSchema, false),
+    strictDescriptor('upgradePlan', [], upgradePlanSchema, true),
+    strictDescriptor('upgradeRun', [kindParam, upgradeNameParam], upgradeRunSchema, true),
+    strictDescriptor('cancelUpgrade', [], removeSchema, false),
   ]),
 });
 
@@ -333,6 +389,9 @@ export function apply(ctx) {
       removeEntry: async (selector) => unwrap(await ns().removeEntry(selector)),
       setGithubRepo: async (repo) => unwrap(await ns().setGithubRepo(repo)),
       cancelSync: async () => unwrap(await ns().cancelSync()),
+      upgradePlan: async () => unwrap(await ns().upgradePlan()),
+      upgradeRun: async (kind, name) => unwrap(await ns().upgradeRun(kind, name)),
+      cancelUpgrade: async () => unwrap(await ns().cancelUpgrade()),
     };
     // API 就绪：把面板交给「运维」区块（备份子页是唯一消费者）。
     panelHolder.current = panel;
