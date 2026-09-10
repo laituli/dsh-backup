@@ -14,6 +14,7 @@ import { resolveSlotLabel } from '@deepseek-ai/dsh-client-ui-slots';
 import { BackupTab } from './tab.jsx';
 // 运维参考文档「同源引用」：git 侧 docs/ops/*.md 与 UI 渲染的是同一份文本
 // （build-client 以 `.md` text loader 内联），不再各写一份差异化文案。
+import { Markdown } from './md.jsx';
 import migrateDoc from '../docs/ops/migrate.zh.md';
 import installDoc from '../docs/ops/install.zh.md';
 import restoreDoc from '../docs/ops/restore.zh.md';
@@ -261,6 +262,11 @@ export function UpgradeTab({ panel, t, onBackup }) {
         <h3 className="dsb-heading"><span>{t('opsUpgradeSyncTitle')}</span></h3>
         <p className="dsb-hint">{t('opsUpgradeSyncHint')}</p>
       </div>
+
+      <div className="dsb-card">
+        <h3 className="dsb-heading"><span>{t('opsDocsTitle')}</span></h3>
+        <Markdown text={upgradeDoc} t={t} />
+      </div>
     </div>
   );
 }
@@ -297,7 +303,11 @@ export function MigrateTab({ t }) {
       <div className="dsb-card">
         <h3 className="dsb-heading"><span>{t('opsDocsTitle')}</span></h3>
         <p className="dsb-hint">{t('opsDocsHint')}</p>
-        <pre className="dsb-doc">{migrateDoc}</pre>
+        <Markdown text={migrateDoc} t={t} />
+      </div>
+      <div className="dsb-card">
+        <h3 className="dsb-heading"><span>{t('opsRestoreDocTitle')}</span></h3>
+        <Markdown text={restoreDoc} t={t} />
       </div>
     </div>
   );
@@ -334,7 +344,7 @@ export function InstallTab({ t }) {
       </div>
       <div className="dsb-card">
         <h3 className="dsb-heading"><span>{t('opsDocsTitle')}</span></h3>
-        <pre className="dsb-doc">{installDoc}</pre>
+        <Markdown text={installDoc} t={t} />
       </div>
     </div>
   );
