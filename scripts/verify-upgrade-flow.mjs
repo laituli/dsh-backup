@@ -125,7 +125,7 @@ const plan = await rpc('upgradePlan', {}, 120_000);
 const entry = (plan?.plugins ?? []).find((p) => p.name === TARGET);
 ok('upgradePlan 认出 git 源依赖', Boolean(entry) && entry.spec.includes('github:'), JSON.stringify(plan).slice(0, 200));
 ok(`upgradePlan 读到当前 tag=${FROM}`, entry?.current === FROM, String(entry?.current));
-ok(`upgradePlan 查到远端最新 tag=${TO} 且标记 hasUpdate`, entry?.latest === TO && entry?.hasUpdate === true, JSON.stringify(entry ?? {}).slice(0, 220));
+ok(`upgradePlan 查到远端最新 tag=${TO} 且标记 hasUpdate`, entry?.latest === TO && entry?.hasUpdate === true, JSON.stringify(entry ?? {}).slice(0, 360));
 
 const run = await rpc('upgradeRun', { kind: 'one', name: TARGET }, 900_000);
 const item = (run?.plugins ?? [])[0] ?? {};
