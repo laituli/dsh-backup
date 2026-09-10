@@ -10,7 +10,7 @@
  */
 
 import { z } from 'zod';
-import { OpsSection, OpsBackupTab } from './ops.jsx';
+import { OpsSection, OpsBackupTab, RestartTab, UpgradeTab } from './ops.jsx';
 import { zh, en } from './locales.js';
 import { installPanelStyles } from './styles.js';
 import pkg from '../package.json' with { type: 'json' };
@@ -254,6 +254,26 @@ export function apply(ctx) {
     locale: NS,
     inject: () => ({ panel: panelHolder.current }),
   }, OpsBackupTab)), 'dsh-backup: ops backup tab');
+
+  // 重启 / 升级两个子页（此前只注册了备份，运维里只剩一个页签）：
+  // panel 与 onBackup 由 OpsSection 经 childProps 透传，这里只需给出面板句柄。
+  ctx.effect(() => ctx.slots.inject('dsh-backup.ops.tab', () => ctx.slots.register({
+    name: 'dsh-backup.ops.tab',
+    id: 'ops-restart',
+    order: 20,
+    label: () => label('opsTabRestart'),
+    locale: NS,
+    inject: () => ({ panel: panelHolder.current }),
+  }, RestartTab)), 'dsh-backup: ops restart tab');
+
+  ctx.effect(() => ctx.slots.inject('dsh-backup.ops.tab', () => ctx.slots.register({
+    name: 'dsh-backup.ops.tab',
+    id: 'ops-upgrade',
+    order: 30,
+    label: () => label('opsTabUpgrade'),
+    locale: NS,
+    inject: () => ({ panel: panelHolder.current }),
+  }, UpgradeTab)), 'dsh-backup: ops upgrade tab');
 
   ctx.inject(['remote.backupPanel'], (scope) => {
     const t = scope.locale.bind(NS);
