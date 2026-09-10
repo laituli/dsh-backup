@@ -40,6 +40,15 @@ const statusSchema = z.object({
     types: z.array(z.string()),
   })).optional(),
   // 「重启 / 升级」卡片：停机+启动成对指令（老宿主无此字段 → optional）
+  // 「从 0 安装」清单：dsh 版本 + 各 profile 的插件引用（URL#tag 规范）
+  installPlan: z.object({
+    dshVersion: z.string().nullable(),
+    profiles: z.array(z.object({
+      name: z.string(),
+      bundles: z.array(z.string()),
+      deps: z.array(z.object({ name: z.string(), spec: z.string(), ref: z.string() })),
+    })),
+  }).optional(),
   restart: z.object({
     webPort: z.number().int(),
     stopCmd: z.string(),

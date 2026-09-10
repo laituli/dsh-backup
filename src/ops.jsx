@@ -317,9 +317,26 @@ export function MigrateTab({ t }) {
  * 重装/安装子页：只往 profile 里加插件，不碰宿主数据（与恢复备份严格区分）。
  * 因此不需要停机窗口，也不做宿主机级验证——装完重启宿主加载即可。
  */
-export function InstallTab({ t }) {
+export function InstallTab({ panel, t }) {
+  const { snap } = useStatus(panel, t);
+  const plan = snap?.installPlan;
+  const installCmds = (() => {
+    if (!plan) return null;
+    const lines = [`npm i -g @deepseek-ai/dsh@${plan.dshVersion ?? 'latest'}`];
+    for (const p of plan.profiles) {
+      for (const dep of p.deps) lines.push(`dsh plugin --profile ${p.name} add "${dep.ref}"`);
+    }
+    return lines.join('\n');
+  })();
   return (
     <div className="dsb-ops-page">
+      {installCmds ? (
+        <div className="dsb-card">
+          <h3 className="dsb-heading"><span>{t('opsInstallPlanTitle')}</span></h3>
+          <p className="dsb-hint">{t('opsInstallPlanHint')}</p>
+          <CmdBlock t={t} title={t('opsInstallPlanCmdTitle')} cmd={installCmds} hint={t('opsInstallPlanCmdHint')} />
+        </div>
+      ) : null}
       <div className="dsb-card">
         <h3 className="dsb-heading"><span>{t('opsInstallTitle')}</span></h3>
         <p className="dsb-hint">{t('opsInstallIntro')}</p>
