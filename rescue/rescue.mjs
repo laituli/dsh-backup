@@ -80,11 +80,17 @@ function stampNow() {
 
 function run(argv, cwd) {
   const r = spawnSync(argv[0], argv.slice(1), { cwd, encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 });
+  // spawn 级失败（ENOENT/EACCES/EPERM/maxBuffer…）时 stdout/stderr 为 undefined：
+  // 直接 Buffer.concat 会抛 “Cannot read properties of undefined (reading 'length')”，
+  // 把真实原因顶掉（灾时最需要看到的就是这条原因）。
+  if (r.error) {
+    throw new Error(`${argv[0]} 无法执行: ${r.error.message}`);
+  }
   if (r.status !== 0) {
-    const text = Buffer.concat([r.stdout, r.stderr]).toString('utf8').slice(0, 800);
+    const text = Buffer.concat([r.stdout ?? Buffer.alloc(0), r.stderr ?? Buffer.alloc(0)]).toString('utf8').slice(0, 800);
     throw new Error(`${argv[0]} ${argv.slice(1).join(' ')} 失败 (exit ${r.status}): ${text}`);
   }
-  return r.stdout.toString('utf8');
+  return (r.stdout ?? Buffer.alloc(0)).toString('utf8');
 }
 
 async function sha256File(absPath) {
@@ -453,6 +459,12 @@ async function doctorRepair(root, dshHome, selector) {
 
 async function restoreArchive(root, selector, apply) {
   const dshHome = resolveDshHome();
+  // 备份目录落在数据目录内部时，整包恢复会先把 dshHome 挪旁——归档与其 cwd
+  // 随之失效，解压必然 ENOENT（实测：destination=~/.dsh 下的目录）。提前拦住，
+  // 给出可操作指引，而不是走到一半再回滚。
+  if (root === dshHome || root.startsWith(`${dshHome}/`)) {
+    throw new Error(`备份目录（${root}）位于数据目录（${dshHome}）内部：整包恢复会把它一起挪走，归档随即不可读。请把备份 destination 指到数据目录之外（如 ~/Desktop/dsh-backups），或改用 dsh 内的 /backup restore。`);
+  }
   const picked = await pickArchive(root, selector);
   const v = await verifyOne(root, picked.name);
   if (!v.ok) throw new Error(`校验未通过（${v.note}），恢复已中止`);
@@ -845,6 +857,8 @@ const HELP = `dsh-rescue —— dsh-backup 的进程外救援通道（零依赖�
   node rescue.mjs restore <前缀|latest> 恢复预览；确认无误后加 --yes 执行
   node rescue.mjs deploy-restore <前缀|latest> [--yes] 部署停机窗口恢复：
                                           延时→停止宿主→删除(挪旁)→恢复
+  node rescue.mjs stop [--web-port N]    停止监听该端口的 dsh 宿主进程并等端口
+                                          释放（重启/恢复前先停旧实例；幂等）
   node rescue.mjs doctor                会话日志体检
   node rescue.mjs doctor --repair [前缀] 从备份定点修复损坏的会话日志
   node rescue.mjs serve [--port N]      同无参数：启动救援网页
@@ -911,6 +925,19 @@ async function main() {
     console.log(summarizeDoctorScan(r));
     if (r.corruptCount) console.log('\n修复: node rescue.mjs doctor --repair [前缀|latest]');
     if (r.corruptCount) process.exitCode = 1;
+    return;
+  }
+  if (cmd === 'stop') {
+    const wpIdx = argv.indexOf('--web-port');
+    const portNum = Number(wpIdx >= 0 ? argv[wpIdx + 1] : 3080);
+    if (!Number.isFinite(portNum) || portNum <= 0) {
+      console.error('--web-port 需为有效端口号');
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`⏹ 停止监听端口 ${portNum} 的 dsh 宿主…`);
+    await stopHostForRestore({ pid: undefined, port: portNum, maxWaitSec: 120, settleSec: 8 });
+    console.log('✅ 旧宿主已停止（端口已释放）。现在可以启动新的 dsh。');
     return;
   }
   if (cmd === 'deploy-restore') {
