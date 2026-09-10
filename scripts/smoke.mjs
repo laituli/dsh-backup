@@ -441,6 +441,11 @@ async function main() {
     ok(JSON.stringify(endpoints) === JSON.stringify(['backupPanel/status', 'backupPanel/backup', 'backupPanel/verify', 'backupPanel/restore', 'backupPanel/setAuto', 'backupPanel/githubStatus', 'backupPanel/githubSyncNow', 'backupPanel/githubPull', 'backupPanel/removeEntry', 'backupPanel/setGithubRepo', 'backupPanel/cancelSync', 'backupPanel/doctorScan', 'backupPanel/doctorRepair', 'backupPanel/upgradePlan', 'backupPanel/upgradeRun', 'backupPanel/cancelUpgrade']), `16 个端点齐全: ${endpoints.join(', ')}`);
     ok(contrib && contrib.invocations.every((d) => d.service === 'backupPanel' && d.result.mode === 'src-json'), '描述符 service/result codec 正确');
     const panel = mock.services.find((s) => s.name === 'backupPanel');
+    // 守卫：网关是按 descriptor.method 在服务对象上 Reflect.get 的——内部 panelOps 有、
+    // 服务类没转发，就会表现为「服务在、方法不存在」（实测踩过：cancelSync/upgradePlan/
+    // upgradeRun/cancelUpgrade 四个都漏在服务类上）。这条断言一次性堵住这类缺口。
+    const missingOnService = endpoints.map((e) => e.split('/')[1]).filter((m) => typeof panel?.[m] !== 'function');
+    ok(missingOnService.length === 0, `服务对象暴露全部端点方法（缺: ${missingOnService.join(', ') || '无'}）`);
     ok(panel !== undefined, 'backupPanel 服务已挂载');
     if (panel) {
       const snap = await panel.status();
