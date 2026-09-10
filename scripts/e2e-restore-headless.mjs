@@ -296,7 +296,7 @@ async function main() {
   check('恢复后宿主 RPC status 可用且能列出归档', Array.isArray(st?.backups) && st.backups.length >= 1 && String(st?.destination ?? '') === dest.split('\\').join('/'), JSON.stringify(st).slice(0, 200));
   // 「重启 / 升级」卡片的数据源：面板靠 status.restart 渲染成对指令
   check('status 返回「重启/升级」成对指令（stop + relaunch + 端口）',
-    typeof st?.restart?.stopCmd === 'string' && st.restart.stopCmd.includes('stop') && st.restart.stopCmd.includes('rescue')
+    typeof st?.restart?.stopCmd === 'string' && st.restart.stopCmd.includes('stop') && st.restart.stopCmd.includes('ops.mjs')
     && typeof st?.restart?.relaunchCmd === 'string' && /node/i.test(st.restart.relaunchCmd)
     && Number.isInteger(st?.restart?.webPort),
     JSON.stringify(st?.restart).slice(0, 240));
@@ -311,7 +311,7 @@ async function main() {
   // 中止文件取消，既验证字段与内容，又不会真的停宿主。
   const armed = await rpc('restore', { selector: archive, dryRun: false, deploy: true, deployDelay: 900 }, 60000);
   const cmdsOk = armed?.ok === true && armed?.deployRestore === true
-    && typeof armed?.stopCmd === 'string' && armed.stopCmd.includes('stop') && armed.stopCmd.includes('rescue')
+    && typeof armed?.stopCmd === 'string' && armed.stopCmd.includes('stop') && armed.stopCmd.includes('ops.mjs')
     && typeof armed?.relaunchCmd === 'string' && /node/i.test(armed.relaunchCmd)
     && typeof armed?.offlineCmd === 'string' && armed.offlineCmd.includes('deploy-restore');
   check('面板恢复返回成对可复制指令（stop/relaunch/offline）', cmdsOk, JSON.stringify({ stop: armed?.stopCmd, relaunch: armed?.relaunchCmd, offline: armed?.offlineCmd }).slice(0, 400));
