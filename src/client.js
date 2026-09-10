@@ -53,6 +53,9 @@ const statusSchema = z.object({
     webPort: z.number().int(),
     stopCmd: z.string(),
     relaunchCmd: z.string(),
+    // 换机/冷启动可照抄的两条：不引用任何本机路径（端口结束进程 + dsh web）
+    portableStopCmd: z.string().optional(),
+    portableRelaunchCmd: z.string().optional(),
   }).optional(),
   // 刚性重试实时进度（null/缺省 = 当前没有网络动作在跑）
   net: z.object({

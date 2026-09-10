@@ -203,6 +203,14 @@ export function RestartTab({ panel, t, onBackup }) {
             cmd={[restart.stopCmd, restart.relaunchCmd].join('\n')}
             hint={t('stopStartCombinedHint')}
           />
+          {restart.portableStopCmd || restart.portableRelaunchCmd ? (
+            <CmdBlock
+              t={t}
+              title={t('restartPortableTitle')}
+              cmd={[restart.portableStopCmd, restart.portableRelaunchCmd].filter(Boolean).join('\n')}
+              hint={t('restartPortableHint')}
+            />
+          ) : null}
           <div className="dsb-row" style={{ marginTop: '2px' }}>
             <button type="button" className="dsb-btn-secondary" onClick={onBackup}>
               {t('restartBackupAfter')}
