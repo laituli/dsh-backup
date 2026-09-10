@@ -1,7 +1,8 @@
 /**
- * `dsh-backup` 浏览器半边：挂载 `backupPanel` Remote 贡献，并在 Settings
- * 的 Plugins 区注册「备份」标签页（`settings.plugins.tab`，id `backup`）。
- * 所有数据经 `remote.backupPanel` 命名空间往返——标签页不持有其它 RPC，
+ * `dsh-backup` 浏览器半边：挂载 `backupPanel` Remote 贡献，并在 Settings 的
+ * 「运维」区块（`settings.section`，id `ops`）注册 备份 / 重启 / 升级 三个子页，
+ * 其中「备份」子页由本插件的 `dsh-backup.ops.tab` 槽提供。
+ * 所有数据经 `remote.backupPanel` 命名空间往返——子页不持有其它 RPC，
  * 也不自带除展开/预览以外的状态。
  *
  * 本文件由 scripts/build-client.mjs 打包为 lib/client.js（CJS 工厂包裹，
@@ -9,7 +10,7 @@
  */
 
 import { z } from 'zod';
-import { BackupTab } from './tab.jsx';
+import { OpsSection, OpsBackupTab } from './ops.jsx';
 import { zh, en } from './locales.js';
 import { installPanelStyles } from './styles.js';
 import pkg from '../package.json' with { type: 'json' };
@@ -38,6 +39,12 @@ const statusSchema = z.object({
     size: z.number().int().nullable(),
     types: z.array(z.string()),
   })).optional(),
+  // 「重启 / 升级」卡片：停机+启动成对指令（老宿主无此字段 → optional）
+  restart: z.object({
+    webPort: z.number().int(),
+    stopCmd: z.string(),
+    relaunchCmd: z.string(),
+  }).optional(),
 });
 
 const backupSchema = z.object({
@@ -86,6 +93,12 @@ const restoreSchema = z.object({
   port: z.number().int().optional(),
   armFile: z.string().optional(),
   abortFile: z.string().optional(),
+  // 恢复完成后的「人工交接」：可复制的完整指令（任意 shell 粘贴）。
+  // stopCmd 先停旧宿主（rescue stop，跨平台幂等）；relaunchCmd 再启新 dsh；
+  // offlineCmd 仅部署期恢复返回（自动执行器未生效时的手动停机恢复等价指令）。
+  stopCmd: z.string().nullable().optional(),
+  relaunchCmd: z.string().nullable().optional(),
+  offlineCmd: z.string().nullable().optional(),
 });
 
 const setAutoSchema = z.object({
@@ -214,6 +227,34 @@ export function apply(ctx) {
     };
   }, 'dsh-backup: remote contribution');
 
+  // 「运维」区块先于 Remote 挂载注册：即使 backupPanel Remote 因鉴权/连接异常
+  // 没挂上，重启与升级两个子页仍然可用（它们的状态请求有界等待并自渲染错误），
+  // 备份子页也会显示明确错误，而不是永久停在"正在读取备份状态…"。
+  // panel 用容器对象传递：区块注册发生在前，API 就绪在后，槽渲染时读到的
+  // 永远是最新值（未就绪即 undefined，组件据此显示错误+重试）。
+  const panelHolder = { current: undefined };
+  // 槽标签自己绑字典：不依赖框架回调传入的 locale 形态。
+  const label = (key) => ctx.locale.bind(NS)(key);
+
+  ctx.effect(() => ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'ops',
+    order: 25,
+    label: () => label('opsNav'),
+    locale: NS,
+    inject: () => ({ ctx, panel: panelHolder.current }),
+    children: { 'dsh-backup.ops.tab': { kind: 'list', scope: 'root' } },
+  }, OpsSection)), 'dsh-backup: ops section');
+
+  ctx.effect(() => ctx.slots.inject('dsh-backup.ops.tab', () => ctx.slots.register({
+    name: 'dsh-backup.ops.tab',
+    id: 'ops-backup',
+    order: 10,
+    label: () => label('opsTabBackup'),
+    locale: NS,
+    inject: () => ({ panel: panelHolder.current }),
+  }, OpsBackupTab)), 'dsh-backup: ops backup tab');
+
   ctx.inject(['remote.backupPanel'], (scope) => {
     const t = scope.locale.bind(NS);
     const ns = () => scope.remote.backupPanel;
@@ -229,13 +270,10 @@ export function apply(ctx) {
       removeEntry: async (selector) => unwrap(await ns().removeEntry(selector)),
       setGithubRepo: async (repo) => unwrap(await ns().setGithubRepo(repo)),
     };
-    scope.slots.inject('settings.plugins.tab', () => scope.slots.register({
-      name: 'settings.plugins.tab',
-      id: 'backup',
-      order: 35,
-      label: () => t('tab'),
-      locale: NS,
-      inject: () => ({ panel }),
-    }, BackupTab));
+    // API 就绪：把面板交给「运维」区块（备份子页是唯一消费者）。
+    panelHolder.current = panel;
+    return () => {
+      if (panelHolder.current === panel) panelHolder.current = undefined;
+    };
   });
 }

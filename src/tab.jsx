@@ -18,9 +18,58 @@ function mb(size, t) {
   return size >= 1048576 ? `${(size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(size / 1024))} KB`;
 }
 
+/** 剪贴板回退（navigator.clipboard 不可用/被拒时的 textarea 方案）。 */
+function fallbackCopy(text, done) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  } catch { /* 复制失败不阻塞 */ }
+  done();
+}
+
+/** 复制文本：优先 navigator.clipboard，不可用/被拒时回退 textarea。 */
+function copyText(text, done) {
+  const s = String(text ?? '');
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      void navigator.clipboard.writeText(s).then(done).catch(() => fallbackCopy(s, done));
+      return;
+    }
+  } catch { /* 走回退 */ }
+  fallbackCopy(s, done);
+}
+
+/** 一条可复制指令块（任意终端粘贴）：标题 + 提示 + <pre> + 复制按钮。 */
+function CmdBlock({ t, title, cmd, hint, step }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => copyText(cmd, () => { setCopied(true); setTimeout(() => setCopied(false), 1600); });
+  return (
+    <div className="dsb-cmd">
+      <div className="dsb-cmd-head">
+        <span className="dsb-cmd-title">{step !== undefined ? `${step}. ` : ''}{title}</span>
+        <button type="button" className="dsb-btn-secondary dsb-copy" onClick={copy} aria-label={title}>
+          {copied ? t('cmdCopied') : t('cmdCopy')}
+        </button>
+      </div>
+      {hint ? <p className="dsb-hint">{hint}</p> : null}
+      <pre className="dsb-cmd-pre">{cmd}</pre>
+    </div>
+  );
+}
+
 /** 渲染「备份」标签页。 */
 /** 部署期恢复默认延时（秒），与宿主 DEFAULTS.deployRestoreDelay 对齐。 */
 const DEFAULTS_DEPLOY_DELAY = 60;
+/** 状态请求超时（毫秒）：鉴权/连接异常时 RPC 静默悬挂，必须给失败一个期限。 */
+const STATUS_TIMEOUT_MS = 15000;
+/** GitHub ????????(??? DEFAULTS.githubTimeoutSec ??)? */
+const DEFAULTS_NET_TIMEOUT = 40;
 /** 分类型备份的候选类型（key 与宿主 BACKUP_TYPES 对齐；标签走 locales）。 */
 const TYPE_OPTIONS = [
   ['credentials', 'typeCredentials'],
@@ -38,6 +87,9 @@ export function BackupTab({ panel, t }) {
   const [request, setRequest] = useState(0);
   const [busy, setBusy] = useState('');
   const [banner, setBanner] = useState(null);
+  // 恢复完成后的“人工交接”卡片：可复制的完整指令（stopCmd → relaunchCmd → offlineCmd）
+  const [handoff, setHandoff] = useState(null);
+  const [copiedAll, setCopiedAll] = useState(false);
   const [hoursInput, setHoursInput] = useState('');
   const [pending, setPending] = useState(null);
   const [repoInput, setRepoInput] = useState('');
@@ -67,6 +119,7 @@ export function BackupTab({ panel, t }) {
   const [keepInput, setKeepInput] = useState('');
   const [excludeInput, setExcludeInput] = useState('');
   const [deployDelaySetInput, setDeployDelaySetInput] = useState('');
+  const [netTimeoutSetInput, setNetTimeoutSetInput] = useState('');
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [settingsStatus, setSettingsStatus] = useState(''); // '' | 'saving' | 'saved' | 'error'
   const [settingsMsg, setSettingsMsg] = useState('');
@@ -82,6 +135,7 @@ export function BackupTab({ panel, t }) {
     setKeepInput(data.keep > 0 ? String(data.keep) : '');
     setExcludeInput(Array.isArray(data.exclude) ? data.exclude.join(', ') : '');
     setDeployDelaySetInput(data.deployRestoreDelay !== undefined ? String(data.deployRestoreDelay) : '');
+    setNetTimeoutSetInput(data.githubTimeoutSec !== undefined ? String(data.githubTimeoutSec) : '');
     setSettingsDirty(false);
   };
 
@@ -101,24 +155,32 @@ export function BackupTab({ panel, t }) {
   useEffect(() => {
     let current = true;
     setFailed(false);
+    if (panel === undefined || panel === null) {
+      setFailed(true);
+      return () => { current = false; };
+    }
+    // 有界等待：鉴权失效/连接异常时 RPC 会静默悬挂，不能让面板永久转圈。
+    const timer = setTimeout(() => { if (current) { setFailed(true); setSnap(null); } }, STATUS_TIMEOUT_MS);
     void Promise.all([panel.status(), panel.githubStatus()]).then(
       ([snapshot, gh]) => {
+        clearTimeout(timer);
         if (current) {
           setSnap(snapshot);
           setGithub(gh);
           if (gh.repoRaw !== null) setRepoInput(gh.repoRaw);
         }
       },
-      () => { if (current) { setFailed(true); setSnap(null); } },
+      () => { clearTimeout(timer); if (current) { setFailed(true); setSnap(null); } },
     );
-    return () => { current = false; };
+    return () => { current = false; clearTimeout(timer); };
   }, [panel, request]);
 
-  const run = async (id, fn) => {
+  const run = async (id, fn, after) => {
     setBusy(id);
     try {
       const r = await fn();
       setBanner({ ok: r.ok !== false, text: r.summary || '' });
+      if (after) after(r);
     } catch (err) {
       setBanner({ ok: false, text: String(err && err.message ? err.message : err) });
     } finally {
@@ -144,6 +206,7 @@ export function BackupTab({ panel, t }) {
   // 预览刻意不走 run()：dry-run 的 summary 已由弹窗承载，再落横幅会重复。
   const previewRestore = async (name, types) => {
     setPending(null);
+    setHandoff(null);
     // 勾选状态在每次打开预览时重置——取消/Esc/背板退出不会走到 confirmRestore，
     // 残留的勾选会让下一次恢复"默认重装依赖"（review P1-2）
     setSyncDeps(false);
@@ -174,6 +237,19 @@ export function BackupTab({ panel, t }) {
     }
   };
 
+  // 恢复执行：busy/横幅交给 run，成功后把“人工交接”指令（stop/relaunch/offline）
+  // 放进 handoff 卡片渲染成可复制代码块——恢复需要“停旧宿主→启新宿主”。
+  const doRestore = (id, fn) => {
+    setHandoff(null);
+    void run(id, fn, (r) => {
+      if (!r || r.ok === false) return;
+      const stopCmd = r.stopCmd ?? null;
+      const relaunchCmd = r.relaunchCmd ?? null;
+      const offlineCmd = r.offlineCmd ?? null;
+      if (stopCmd || relaunchCmd || offlineCmd) setHandoff({ stopCmd, relaunchCmd, offlineCmd });
+    }).then(reload);
+  };
+
   const confirmRestore = () => {
     const target = pending;
     const deploy = deployMode;
@@ -185,11 +261,11 @@ export function BackupTab({ panel, t }) {
     setDeployDelayInput('');
     if (deploy) {
       // 部署期恢复：不 merge、不 syncDeps——整体 停宿主→删除(挪旁)→恢复
-      void run(`restore:${target.name}`, () => panel.restore(target.name, false, undefined, false, true, deployDelay)).then(reload);
+      doRestore(`restore:${target.name}`, () => panel.restore(target.name, false, undefined, false, true, deployDelay));
       return;
     }
     const withDeps = syncDeps;
-    void run(`restore:${target.name}`, () => panel.restore(target.name, false, target.merge ? target.types : undefined, withDeps)).then(reload);
+    doRestore(`restore:${target.name}`, () => panel.restore(target.name, false, target.merge ? target.types : undefined, withDeps));
   };
 
   // 确认弹窗打开时 Esc 取消；恢复执行中（busy）不响应，避免误关丢反馈。
@@ -215,6 +291,7 @@ export function BackupTab({ panel, t }) {
     const keep = Number(keepInput);
     const exclude = excludeInput.split(',').map((s) => s.trim()).filter(Boolean);
     const deployDelay = Number(deployDelaySetInput);
+    const netTimeout = Number(netTimeoutSetInput);
     try {
       const res = await fetch('/dsh-backup/settings', {
         method: 'POST',
@@ -224,6 +301,7 @@ export function BackupTab({ panel, t }) {
           keep: Number.isFinite(keep) && keep >= 1 ? Math.floor(keep) : 0,
           exclude,
           deployRestoreDelay: Number.isFinite(deployDelay) && deployDelay >= 0 ? Math.floor(deployDelay) : DEFAULTS_DEPLOY_DELAY,
+          githubTimeoutSec: Number.isFinite(netTimeout) && netTimeout >= 5 ? Math.floor(netTimeout) : DEFAULTS_NET_TIMEOUT,
           revision: settingsRevision,
         }),
       });
@@ -295,6 +373,7 @@ export function BackupTab({ panel, t }) {
     else if (field === 'keep') setKeepInput(value);
     else if (field === 'exclude') setExcludeInput(value);
     else if (field === 'deployRestoreDelay') setDeployDelaySetInput(value);
+    else if (field === 'githubTimeoutSec') setNetTimeoutSetInput(value);
   };
 
   // 保存前客户端校验：给出 inline 原因，而不是静默禁用保存按钮
@@ -305,6 +384,9 @@ export function BackupTab({ panel, t }) {
   }
   if (settingsDirty && keepInput !== '' && (!/^\d+$/.test(keepInput) || Number(keepInput) < 1 || Number(keepInput) > 999)) {
     settingsErrors.push(t('settingsKeepInvalid'));
+  }
+  if (settingsDirty && netTimeoutSetInput !== '' && (!/^\d+$/.test(netTimeoutSetInput) || Number(netTimeoutSetInput) < 5 || Number(netTimeoutSetInput) > 3600)) {
+    settingsErrors.push(t('settingsNetTimeoutInvalid'));
   }
   if (settingsDirty && deployDelaySetInput !== '' && (!/^\d+$/.test(deployDelaySetInput) || Number(deployDelaySetInput) < 0 || Number(deployDelaySetInput) > 3600)) {
     settingsErrors.push(t('settingsDeployDelayInvalid'));
@@ -380,6 +462,19 @@ export function BackupTab({ panel, t }) {
                       onChange={(e) => onSettingsFieldChange('deployRestoreDelay', e.target.value)}
                     />
                     <span className="dsb-hint">{t('settingsDeployDelayHint')}</span>
+                  </dd>
+                  <dt>{t('settingsNetTimeoutLabel')}</dt>
+                  <dd>
+                    <input
+                      type="number"
+                      className="dsb-input"
+                      min="5"
+                      max="3600"
+                      aria-label={t('settingsNetTimeoutLabel')}
+                      value={netTimeoutSetInput}
+                      onChange={(e) => onSettingsFieldChange('githubTimeoutSec', e.target.value)}
+                    />
+                    <span className="dsb-hint">{t('settingsNetTimeoutHint')}</span>
                   </dd>
                   <dt>{t('settingsExcludeLabel')}</dt>
                   <dd>
@@ -478,6 +573,12 @@ export function BackupTab({ panel, t }) {
             </div>
           </div>
 
+          {snap.restart ? (
+            <p className="dsb-hint">
+              {t('restartMovedHint').replace('{port}', String(snap.restart.webPort))}
+            </p>
+          ) : null}
+
           {github !== null ? (
             <div className="dsb-card">
               <h3 className="dsb-heading">
@@ -538,6 +639,36 @@ export function BackupTab({ panel, t }) {
 
           {banner !== null ? (
             <p className="dsb-banner" role="status" data-ok={banner.ok ? 'true' : 'false'}>{banner.text}</p>
+          ) : null}
+
+          {handoff !== null && (handoff.stopCmd || handoff.relaunchCmd || handoff.offlineCmd) ? (
+            <div className="dsb-card dsb-handoff">
+              <h4 className="dsb-heading">
+                <span>{t('restoreHandoffTitle')}</span>
+              </h4>
+              <p className="dsb-hint">{t('handoffHowTo')}</p>
+              {handoff.stopCmd || handoff.relaunchCmd ? (
+                <CmdBlock
+                  t={t}
+                  title={t('stopStartCombinedTitle')}
+                  cmd={[handoff.stopCmd, handoff.relaunchCmd].filter(Boolean).join('\n')}
+                  hint={t('stopStartCombinedHint')}
+                />
+              ) : null}
+              {handoff.offlineCmd ? (
+                <CmdBlock
+                  t={t}
+                  title={t('offlineCmdTitle')}
+                  cmd={handoff.offlineCmd}
+                  hint={t('offlineCmdHint')}
+                />
+              ) : null}
+              <div className="dsb-row" style={{ marginTop: '6px' }}>
+                <button type="button" className="dsb-btn-secondary" onClick={() => setHandoff(null)}>
+                  {t('handoffDismiss')}
+                </button>
+              </div>
+            </div>
           ) : null}
 
           {pending !== null ? (

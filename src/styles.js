@@ -401,4 +401,100 @@ const PANEL_CSS = `
   color: var(--dsw-alias-state-error-primary, #e53e3e);
   line-height: 1.5;
 }
+[data-dsh-backup] .dsb-handoff {
+  border: 1px solid var(--dsw-alias-border-strong, rgba(128, 128, 128, 0.35));
+}
+[data-dsh-backup] .dsb-cmd {
+  margin: 10px 0 12px;
+}
+[data-dsh-backup] .dsb-cmd-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+[data-dsh-backup] .dsb-cmd-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+[data-dsh-backup] .dsb-cmd-pre {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-default, rgba(128, 128, 128, 0.25));
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.045);
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}
+[data-dsh-backup] .dsb-copy {
+  font-size: 12px;
+  padding: 2px 10px;
+  flex: none;
+}
+/* ── 设置 → 运维：区块外壳 + 子页导航 ───────────────────────────── */
+[data-dsh-backup].dsb-ops-section {
+  max-width: 760px;
+}
+[data-dsh-backup] .dsb-ops-heading {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+[data-dsh-backup] .dsb-ops-intro {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--dsw-alias-label-tertiary);
+}
+[data-dsh-backup] .dsb-ops-tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 10px;
+  border-bottom: 1px solid var(--dsw-alias-border-l3, rgba(128, 128, 128, 0.25));
+}
+[data-dsh-backup] .dsb-ops-tab {
+  appearance: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary));
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 6px 10px;
+}
+[data-dsh-backup] .dsb-ops-tab:hover {
+  color: var(--dsw-alias-label-primary);
+}
+[data-dsh-backup] .dsb-ops-tab[data-active='true'] {
+  border-bottom-color: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+[data-dsh-backup] .dsb-ops-tab:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: -2px;
+}
+[data-dsh-backup] .dsb-ops-panel {
+  margin-top: 12px;
+}
+[data-dsh-backup] .dsb-ops-page {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+[data-dsh-backup] .dsb-ops-steps {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary));
+}
 `;

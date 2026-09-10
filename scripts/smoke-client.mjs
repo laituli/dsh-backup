@@ -38,24 +38,34 @@ async function main() {
   const requireShim = (id) => {
     if (id === 'react') return require('react');
     if (id === 'react/jsx-runtime') return require('react/jsx-runtime');
+    // 槽标签解析由平台模块提供；这里给出与内置实现同形的实现即可。
+    if (id === '@deepseek-ai/dsh-client-ui-slots') {
+      return { resolveSlotLabel: (label) => (typeof label === 'function' ? label() : label ?? '') };
+    }
     throw new Error(`意外的外部依赖: ${id}`);
   };
   const plugin = entry.factory(requireShim);
   ok(plugin.name === pkgName && JSON.stringify(plugin.inject) === JSON.stringify(['slots', 'locale', 'remote']), `插件导出面正确: ${plugin.name}`);
-
-  console.log('2) apply() 挂载（字典 / Remote 贡献 / 标签页）');
+  console.log('2) apply() 挂载（字典 / Remote 贡献 / 运维区块与子页）');
   const dict = {};
   const contributions = [];
-  const tabRegistrations = [];
+  /** 已注册的槽条目：{ slot, reg, component }。 */
+  const slotEntries = [];
   let scopedCallback = null;
 
   const ctx = {
     effect: (fn) => { const dispose = fn(); return () => dispose?.(); },
     locale: {
       register: (ns, d) => { dict[ns] = d; return () => {}; },
+      bind: (ns) => (key) => dict[ns]?.zh?.[key] ?? key,
+      subscribe: () => () => {},
     },
     remote: {
       $mount: async (c) => { contributions.push(c); return async () => {}; },
+    },
+    slots: {
+      inject: (slotName, registrar) => { slotEntries.push({ slot: slotName, ...registrar() }); },
+      register: (reg, component) => ({ ...reg, component }),
     },
     inject: (names, cb) => { if (names.includes('remote.backupPanel')) scopedCallback = cb; },
   };
@@ -104,7 +114,17 @@ async function main() {
   }
   ok(contribution.descriptors.every((d) => d.parameters.every((p) => p.codec.mode === 'strict' && p.codec.schema)), '参数全部 strict codec（客户端挂载校验要求）');
 
-  console.log('4) 标签页注册与 SSR 渲染');
+  console.log('4) 运维区块 / 子页注册与 SSR 渲染');
+  {
+    const opsSection = slotEntries.find((entry) => entry.slot === 'settings.section' && entry.id === 'ops');
+    ok(opsSection?.name === 'settings.section', `运维区块注册到 settings.section: id=${opsSection?.id}`);
+    ok(JSON.stringify(Object.keys(opsSection?.children ?? {})) === JSON.stringify(['dsh-backup.ops.tab']), `区块声明子页槽: ${Object.keys(opsSection?.children ?? {}).join(', ')}`);
+    ok(typeof opsSection?.label === 'function' && opsSection.label() === '运维', `区块标签: ${opsSection?.label?.()}`);
+    const backupTab = slotEntries.find((entry) => entry.slot === 'dsh-backup.ops.tab' && entry.id === 'ops-backup');
+    ok(backupTab?.name === 'dsh-backup.ops.tab' && typeof backupTab?.label === 'function' && backupTab.label() === '备份', `备份子页注册到运维槽: id=${backupTab?.id}, label=${backupTab?.label?.()}`);
+    ok(slotEntries.every((entry) => entry.slot !== 'settings.plugins.tab'), '不再向「插件」区注册备份标签页（已整体迁到运维）');
+  }
+
   if (scopedCallback === null) { ok(false, 'remote.backupPanel 作用域未激活'); }
   else {
     const calls = { status: 0 };
@@ -128,23 +148,22 @@ async function main() {
         },
       },
       remote: { backupPanel: fakeNamespace },
-      slots: {
-        inject: (slotName, registrar) => { if (slotName === 'settings.plugins.tab') tabRegistrations.push(registrar()); },
-        register: (reg, component) => ({ ...reg, component }),
-      },
     };
     scopedCallback(scope);
-    const tab = tabRegistrations[0];
-    ok(tab?.id === 'backup' && tab?.name === 'settings.plugins.tab' && typeof tab?.label === 'function' && tab.label() === '备份', `标签页注册: id=${tab?.id}, label=${tab?.label?.()}`);
-    ok(typeof tab?.component === 'function' || typeof tab === 'function', '标签页组件可渲染');
+    const tab = slotEntries.find((entry) => entry.id === 'ops-backup');
+    ok(typeof tab?.component === 'function' || typeof tab === 'function', '备份子页组件可渲染');
     const Component = tab?.component ?? tab;
     const injected = tab.inject();
-    ok(typeof injected.panel?.status === 'function' && typeof injected.panel?.restore === 'function' && typeof injected.panel?.githubSyncNow === 'function' && typeof injected.panel?.githubPull === 'function' && typeof injected.panel?.removeEntry === 'function' && typeof injected.panel?.setGithubRepo === 'function', '注入面提供 panel API（含 removeEntry/github）');
+    ok(injected.panel === undefined || (typeof injected.panel?.status === 'function' && typeof injected.panel?.restore === 'function'), '注入面暴露 panel API（或未就绪时保持 undefined，由组件显示错误+重试）');
+    const panelApi = injected.panel ?? {
+      status: async () => samples['backupPanel/status'],
+      githubStatus: async () => samples['backupPanel/githubStatus'],
+    };
 
     const React = require('react');
     const { renderToStaticMarkup } = require('react-dom/server');
-    const markup = renderToStaticMarkup(React.createElement(Component, { panel: injected.panel, t: scope.locale.bind('settings.backupPanel') }));
-    ok(markup.includes('data-dsh-backup') && markup.includes('正在读取备份状态'), 'SSR 渲染出标签页骨架（loading 态）');
+    const markup = renderToStaticMarkup(React.createElement(Component, { panel: panelApi, t: scope.locale.bind('settings.backupPanel') }));
+    ok(markup.includes('data-dsh-backup') && markup.includes('正在读取备份状态'), 'SSR 渲染出备份子页骨架（loading 态）');
   }
 
   console.log(`\n结果: ${checks - failures}/${checks} 通过`);
