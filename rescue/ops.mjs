@@ -154,7 +154,9 @@ async function deployRestore(argv) {
       const i = argv.indexOf(name);
       if (i >= 0) { skip.add(i); skip.add(i + 1); }
     }
-    return argv.find((a, i) => !skip.has(i) && !a.startsWith('--')) ?? 'latest';
+    // 跳过命令名本身（argv 里第一个非 -- 开头的 token 是 'deploy-restore'）
+    const cmdIndex = argv.findIndex((a) => !a.startsWith('--'));
+    return argv.find((a, i) => i !== cmdIndex && !skip.has(i) && !a.startsWith('--')) ?? 'latest';
   })();
   const delaySec = numArg(argv, '--delay', 60);
   const settleSec = numArg(argv, '--settle', 8);
