@@ -486,6 +486,19 @@ export function BackupTab({ panel, t }) {
                     />
                     <span className="dsb-hint">{t('settingsNetTimeoutHint')}</span>
                   </dd>
+                  <dt>{t('settingsRetryWindowLabel')}</dt>
+                  <dd>
+                    <input
+                      type="number"
+                      className="dsb-input"
+                      min="0"
+                      max="86400"
+                      aria-label={t('settingsRetryWindowLabel')}
+                      value={retryWindowSetInput}
+                      onChange={(e) => onSettingsFieldChange('githubRetryWindowSec', e.target.value)}
+                    />
+                    <span className="dsb-hint">{t('settingsRetryWindowHint')}</span>
+                  </dd>
                   <dt>{t('settingsExcludeLabel')}</dt>
                   <dd>
                     <input
