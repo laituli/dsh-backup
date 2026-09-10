@@ -129,7 +129,7 @@ ok(`upgradePlan 查到远端最新 tag=${TO} 且标记 hasUpdate`, entry?.latest
 
 const run = await rpc('upgradeRun', { kind: 'one', name: TARGET }, 900_000);
 const item = (run?.plugins ?? [])[0] ?? {};
-ok('upgradeRun 事务返回成功（装配门+写入都过）', run?.ok === true && item.ok === true, JSON.stringify(run).slice(0, 400));
+ok('upgradeRun 事务返回成功（装配门+写入都过）', run?.ok === true && item.ok === true, JSON.stringify(run).slice(0, 900));
 ok('① 升级前备份已生成', typeof run?.backupName === 'string' && run.backupName.length > 0, String(run?.backupName));
 const restartFile = String(run?.restartFile ?? '');
 ok('② RESTART.txt 已落盘', restartFile.endsWith('RESTART.txt') && fs.existsSync(restartFile), restartFile);
