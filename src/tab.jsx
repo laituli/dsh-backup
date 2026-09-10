@@ -70,6 +70,8 @@ const DEFAULTS_DEPLOY_DELAY = 60;
 const STATUS_TIMEOUT_MS = 15000;
 /** GitHub ????????(??? DEFAULTS.githubTimeoutSec ??)? */
 const DEFAULTS_NET_TIMEOUT = 40;
+/** 刚性完成窗口默认秒数（与宿主 DEFAULTS.githubRetryWindowSec 对齐）。 */
+const DEFAULTS_RETRY_WINDOW = 1800;
 /** 分类型备份的候选类型（key 与宿主 BACKUP_TYPES 对齐；标签走 locales）。 */
 const TYPE_OPTIONS = [
   ['credentials', 'typeCredentials'],
@@ -120,6 +122,7 @@ export function BackupTab({ panel, t }) {
   const [excludeInput, setExcludeInput] = useState('');
   const [deployDelaySetInput, setDeployDelaySetInput] = useState('');
   const [netTimeoutSetInput, setNetTimeoutSetInput] = useState('');
+  const [retryWindowSetInput, setRetryWindowSetInput] = useState('');
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [settingsStatus, setSettingsStatus] = useState(''); // '' | 'saving' | 'saved' | 'error'
   const [settingsMsg, setSettingsMsg] = useState('');
@@ -136,6 +139,7 @@ export function BackupTab({ panel, t }) {
     setExcludeInput(Array.isArray(data.exclude) ? data.exclude.join(', ') : '');
     setDeployDelaySetInput(data.deployRestoreDelay !== undefined ? String(data.deployRestoreDelay) : '');
     setNetTimeoutSetInput(data.githubTimeoutSec !== undefined ? String(data.githubTimeoutSec) : '');
+    setRetryWindowSetInput(data.githubRetryWindowSec !== undefined ? String(data.githubRetryWindowSec) : '');
     setSettingsDirty(false);
   };
 
@@ -292,6 +296,7 @@ export function BackupTab({ panel, t }) {
     const exclude = excludeInput.split(',').map((s) => s.trim()).filter(Boolean);
     const deployDelay = Number(deployDelaySetInput);
     const netTimeout = Number(netTimeoutSetInput);
+    const retryWindow = Number(retryWindowSetInput);
     try {
       const res = await fetch('/dsh-backup/settings', {
         method: 'POST',
@@ -302,6 +307,7 @@ export function BackupTab({ panel, t }) {
           exclude,
           deployRestoreDelay: Number.isFinite(deployDelay) && deployDelay >= 0 ? Math.floor(deployDelay) : DEFAULTS_DEPLOY_DELAY,
           githubTimeoutSec: Number.isFinite(netTimeout) && netTimeout >= 5 ? Math.floor(netTimeout) : DEFAULTS_NET_TIMEOUT,
+          githubRetryWindowSec: Number.isFinite(retryWindow) && retryWindow >= 0 ? Math.floor(retryWindow) : DEFAULTS_RETRY_WINDOW,
           revision: settingsRevision,
         }),
       });
@@ -374,6 +380,7 @@ export function BackupTab({ panel, t }) {
     else if (field === 'exclude') setExcludeInput(value);
     else if (field === 'deployRestoreDelay') setDeployDelaySetInput(value);
     else if (field === 'githubTimeoutSec') setNetTimeoutSetInput(value);
+    else if (field === 'githubRetryWindowSec') setRetryWindowSetInput(value);
   };
 
   // 保存前客户端校验：给出 inline 原因，而不是静默禁用保存按钮
@@ -384,6 +391,9 @@ export function BackupTab({ panel, t }) {
   }
   if (settingsDirty && keepInput !== '' && (!/^\d+$/.test(keepInput) || Number(keepInput) < 1 || Number(keepInput) > 999)) {
     settingsErrors.push(t('settingsKeepInvalid'));
+  }
+  if (settingsDirty && retryWindowSetInput !== '' && (!/^\d+$/.test(retryWindowSetInput) || Number(retryWindowSetInput) < 0 || Number(retryWindowSetInput) > 86400)) {
+    settingsErrors.push(t('settingsRetryWindowInvalid'));
   }
   if (settingsDirty && netTimeoutSetInput !== '' && (!/^\d+$/.test(netTimeoutSetInput) || Number(netTimeoutSetInput) < 5 || Number(netTimeoutSetInput) > 3600)) {
     settingsErrors.push(t('settingsNetTimeoutInvalid'));
