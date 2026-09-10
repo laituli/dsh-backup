@@ -129,6 +129,19 @@ export function BackupTab({ panel, t }) {
 
   const reload = () => { setRequest(v => v + 1); };
 
+  // 刚性重试的实时进度：宿主把当前尝试/退避写进 status.net。窗口默认 30 分钟，
+  // 等待期间面板必须“动”起来——否则用户看到的正是最初那个 bug：按钮转圈、
+  // 列表毫无变化。故：进度条 + 2 秒轮询 + 可取消。
+  const net = snap !== null && snap !== undefined ? (snap.net ?? null) : null;
+  const netLabelText = (label) => t(label === 'git-push' ? 'netLabelPush'
+    : label === 'git-pull-fetch' ? 'netLabelPull' : 'netLabelFetch');
+  const cancelSync = () => { void run('cancel-sync', () => panel.cancelSync()); };
+  useEffect(() => {
+    if (busy !== 'github-sync' && busy !== 'github-pull') return undefined;
+    const timer = setInterval(() => { setRequest(v => v + 1); }, 2000);
+    return () => clearInterval(timer);
+  }, [busy]);
+
   // 将服务端返回的 settings 数据同步到所有输入状态
   const applySettings = (data) => {
     setSettings(data);
@@ -656,7 +669,18 @@ export function BackupTab({ panel, t }) {
                 <button type="button" className="dsb-btn-secondary" disabled={busy !== ''} onClick={pullNow}>
                   {busy === 'github-pull' ? t('githubPullBusy') : t('githubPull')}
                 </button>
+                {net !== null ? (
+                  <button type="button" className="dsb-btn-secondary" onClick={cancelSync}>
+                    {t('netCancel')}
+                  </button>
+                ) : null}
               </div>
+              {net !== null ? (
+                <p className="dsb-hint" role="status" data-net="retrying">
+                  {`${t('netRigidPrefix')}${netLabelText(net.label)}${t('netRigidAttempt')}${net.attempt}${t('netRigidUsed')}${Math.round((net.elapsedMs || 0) / 1000)}s${t('netRigidWindow')}${Math.round((net.windowMs || 0) / 1000)}s${net.nextDelayMs ? `${t('netRigidNext')}${Math.round(net.nextDelayMs / 1000)}s` : ''}`}
+                  {net.lastError ? `　${t('netRigidLastError')}${net.lastError}` : ''}
+                </p>
+              ) : null}
             </div>
           ) : null}
 

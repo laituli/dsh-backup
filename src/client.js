@@ -54,6 +54,16 @@ const statusSchema = z.object({
     stopCmd: z.string(),
     relaunchCmd: z.string(),
   }).optional(),
+  // 刚性重试实时进度（null/缺省 = 当前没有网络动作在跑）
+  net: z.object({
+    label: z.string(),
+    attempt: z.number().int(),
+    elapsedMs: z.number().int(),
+    windowMs: z.number().int(),
+    nextDelayMs: z.number().int(),
+    lastError: z.string().nullable(),
+    at: z.string(),
+  }).nullable().optional(),
 });
 
 const backupSchema = z.object({
@@ -192,6 +202,8 @@ export const BACKUP_REMOTE = Object.freeze({
     strictDescriptor('githubPull', [], githubPullSchema, true),
     strictDescriptor('removeEntry', [selectorParam], removeSchema, true),
     strictDescriptor('setGithubRepo', [repoParam], setGithubRepoSchema, false),
+    // 取消进行中的刚性重试（用户主动中止，不是策略降级）
+    strictDescriptor('cancelSync', [], removeSchema, false),
   ]),
 });
 
@@ -317,6 +329,7 @@ export function apply(ctx) {
       githubPull: async () => unwrap(await ns().githubPull()),
       removeEntry: async (selector) => unwrap(await ns().removeEntry(selector)),
       setGithubRepo: async (repo) => unwrap(await ns().setGithubRepo(repo)),
+      cancelSync: async () => unwrap(await ns().cancelSync()),
     };
     // API 就绪：把面板交给「运维」区块（备份子页是唯一消费者）。
     panelHolder.current = panel;

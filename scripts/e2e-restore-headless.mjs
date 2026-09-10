@@ -161,6 +161,18 @@ async function waitBoot() {
 }
 
 async function rpc(method, args = {}, timeoutMs = 20000) {
+  // 改 settings（destination 属于插件配置）会触发宿主的 live patch 重载：重载窗口内
+  // RPC 网关会短暂报 gateway/service-unavailable。这是宿主的既定行为，不是被测缺陷，
+  // 故对这一个错误码做有限重试（两次，间隔 600ms）；其余错误照旧原样返回。
+  for (let round = 0; ; round += 1) {
+    const out = await rpcOnce(method, args, timeoutMs);
+    const raw = String(out?.raw ?? out?.error?.message ?? '');
+    if (!(out?.ok === false && /service-unavailable|is unavailable/i.test(raw)) || round >= 2) return out;
+    await new Promise((r) => setTimeout(r, 600));
+  }
+}
+
+async function rpcOnce(method, args = {}, timeoutMs = 20000) {
   try {
     const res = await req(`${BASE}/api/backupPanel/${method}`, {
       method: 'POST',
@@ -186,15 +198,60 @@ async function main() {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-rh-'));
   console.log(`[e2e-restore] home=${home} port=${E2E_PORT}`);
 
-  // 临时 profile：元数据文件复制 + node_modules junction 到真实 store（内容已对齐 dev 产物）
+  // 临时 profile：元数据文件复制 + node_modules 逐项 junction 镜像到真实 store
   const webDir = path.join(home, 'profiles', 'web');
-  fs.mkdirSync(path.join(webDir, 'node_modules'), { recursive: true });
-  fs.rmSync(path.join(webDir, 'node_modules'), { recursive: true, force: true });
+  fs.mkdirSync(webDir, { recursive: true });
   for (const f of ['package.json', 'cordis.yml', 'cordis.patch.yml', 'pnpm-lock.yaml']) {
     const src = path.join(profileSrc, f);
     if (fs.existsSync(src)) fs.copyFileSync(src, path.join(webDir, f));
   }
-  fs.symlinkSync(path.join(profileSrc, 'node_modules'), path.join(webDir, 'node_modules'), 'junction');
+  // 临时 profile 的 node_modules：按真实 store 逐项 junction 镜像（而不是整目录
+  // junction），这样唯一的例外——本仓工作树——可以覆盖已安装副本。
+  // 意义：E2E 验证的是「当前工作树」，而不是商店里上一次装好的版本。
+  const realNm = path.join(profileSrc, 'node_modules');
+  const nmDir = path.join(webDir, 'node_modules');
+  fs.mkdirSync(nmDir, { recursive: true });
+  // 本仓宿主代码来自哪里：dev（默认，工作树）| store（商店里已安装的那份）。
+  // store 用于把「宿主代码差异」与「依赖/客户端半边的解析差异」分开定位。
+  const pluginSrc = process.env.E2E_PLUGIN_SRC || 'dev';
+  const storePkgDir = fs.realpathSync(path.join(realNm, '@xiaoyuyu6420', 'dsh-backup'));
+  // dev 模式不能直接 junction 工作树：开发仓的 node_modules 里可能有 smoke 用的桩
+  // （@deepseek-ai/dsh-tools@0.0.0-smoke-stub 等），直连时插件在真宿主里注册不上
+  // （表现为端点报 active Service "backupPanel" is unavailable）。故：把工作树的
+  // 发布文件复制进临时包，node_modules 指向商店那支配好的 peer 目录。
+  let devStage = null;
+  if (pluginSrc === 'dev') {
+    devStage = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-devpkg-'));
+    for (const f of ['package.json', 'cordis.patch.yml']) {
+      fs.copyFileSync(path.join(repoRoot, f), path.join(devStage, f));
+    }
+    fs.mkdirSync(path.join(devStage, 'lib'), { recursive: true });
+    for (const f of ['index.js', 'client.js']) {
+      fs.copyFileSync(path.join(repoRoot, 'lib', f), path.join(devStage, 'lib', f));
+    }
+    fs.symlinkSync(path.join(storePkgDir, '..', '..'), path.join(devStage, 'node_modules'), 'junction');
+  }
+  const DEV_LINK = { '@xiaoyuyu6420/dsh-backup': devStage ?? storePkgDir };
+  console.log(`[e2e-restore] 宿主代码来源=${pluginSrc}（${DEV_LINK['@xiaoyuyu6420/dsh-backup']}）`);
+  const linkEntry = (from, toName) => {
+    try { fs.symlinkSync(from, path.join(nmDir, toName), 'junction'); return; } catch { /* 回退 */ }
+    try { fs.cpSync(from, path.join(nmDir, toName), { recursive: true }); } catch { /* 忽略 */ }
+  };
+  for (const entry of fs.readdirSync(realNm)) {
+    if (entry.startsWith('@')) {
+      const scopeReal = path.join(realNm, entry);
+      if (!fs.statSync(scopeReal).isDirectory()) { linkEntry(scopeReal, entry); continue; }
+      fs.mkdirSync(path.join(nmDir, entry), { recursive: true });
+      for (const pkg of fs.readdirSync(scopeReal)) {
+        const dev = DEV_LINK[`${entry}/${pkg}`];
+        fs.symlinkSync(dev || path.join(scopeReal, pkg), path.join(nmDir, entry, pkg), 'junction');
+      }
+      continue;
+    }
+    if (DEV_LINK[entry]) { fs.symlinkSync(DEV_LINK[entry], path.join(nmDir, entry), 'junction'); continue; }
+    linkEntry(path.join(realNm, entry), entry);
+  }
+  console.log(`[e2e-restore] node_modules 镜像完成`);
   // webserver 端口 patch：隔离端口，避免与真实 3080 冲突
   fs.writeFileSync(path.join(webDir, 'cordis.patch.yml'), [
     '# e2e restore isolated profile',
@@ -227,11 +284,44 @@ async function main() {
   // （正是本脚本早前踩到的真实隐患，现在插件与 rescue 都已加护栏）。
   const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-rh-dest-'));
   const destTag = path.basename(dest);
+  // 关键：这一步必须成功。曾出现 POST 静默失败（未检查状态码）→ 目的地仍是真实
+  // ~/Desktop/dsh-backups → 该目录 auto.json 带真实 githubRepo/token → 备份链路去做
+  // 真实网络 push（刚性重试 30 分钟）→ backup RPC 180s 超时。现在硬断言状态码。
+  let destOk = false;
+  let postJson = null;
   if (settings && settings.revision !== undefined) {
-    await req(`${BASE}/dsh-backup/settings`, {
+    const postRes = await req(`${BASE}/dsh-backup/settings`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ revision: settings.revision, destination: dest }),
-    }).then((r) => r.json());
+    });
+    const postText = await postRes.text().catch(() => '');
+    try { postJson = JSON.parse(postText); } catch { postJson = null; }
+    destOk = postRes.status === 200 && postText.includes(destTag);
+    check('设置目的地=隔离 bkdest（POST 200 且回显）', destOk, `HTTP ${postRes.status} ${postText.slice(0, 240)}`);
+  } else {
+    check('设置目的地=隔离 bkdest（POST 200 且回显）', false, `GET settings 异常: ${JSON.stringify(settings).slice(0, 200)}`);
+  }
+  // 双保险：隔离宿主绝不能继承真实 GitHub 配置（否则会把临时 home 推到用户真实仓库）。
+  // 注意要点名查 githubStatus().repo —— 那是「运行时 auto.json」层，历史上正是它
+  // 在目的地切换后仍留着真实仓库，settings 层的 githubRepo 却是空字符串。
+  let gh0 = await rpc('githubStatus');
+  if (gh0?.repo != null) {
+    // 旧版本/异常路径会把上一个根的仓库状态带到新根：先在隔离宿主里显式清掉再继续
+    // （清不掉就中止，绝不冒险把临时数据推向用户真实仓库）
+    await rpc('setGithubRepo', { repo: '' }, 30000);
+    gh0 = await rpc('githubStatus');
+  }
+  const repoLeak = gh0?.repo != null;
+  check('隔离宿主未继承真实 GitHub 配置（githubStatus.repo 为空）', gh0?.repo == null, JSON.stringify(gh0).slice(0, 240));
+  if (!destOk || repoLeak) {
+    // 目的地没切过去 → 后续备份会打到真实备份根（含真实 GitHub 配置），既慢又污染真实数据
+    console.log('[e2e-restore] 目的地未切换成功，中止后续步骤（避免污染真实备份根）');
+    return;
+  }
+  if (process.env.E2E_STOP_AFTER === 'settings') {
+    const eff = await req(`${BASE}/dsh-backup/settings`).then((r) => r.text()).catch((e) => `ERR ${e.message}`);
+    console.log(`[e2e-restore] 诊断停机（E2E_STOP_AFTER=settings）:\n${String(eff).slice(0, 900)}`);
+    return;
   }
   const bk = await rpc('backup', {}, 180000);
   check('RPC backup 成功并落到隔离 bkdest', bk?.ok === true && String(bk?.path ?? '').includes(destTag), JSON.stringify(bk).slice(0, 200));

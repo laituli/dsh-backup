@@ -438,7 +438,7 @@ async function main() {
     const contrib = mock.typertContribs[0];
     ok(contrib !== undefined && contrib.package === 'dsh-backup' && contrib.face === 'host', 'typert 贡献已注册（host 面）');
     const endpoints = contrib ? contrib.invocations.map((d) => `${d.namespace}/${d.method}`) : [];
-    ok(JSON.stringify(endpoints) === JSON.stringify(['backupPanel/status', 'backupPanel/backup', 'backupPanel/verify', 'backupPanel/restore', 'backupPanel/setAuto', 'backupPanel/githubStatus', 'backupPanel/githubSyncNow', 'backupPanel/githubPull', 'backupPanel/removeEntry', 'backupPanel/setGithubRepo', 'backupPanel/doctorScan', 'backupPanel/doctorRepair']), `12 个端点齐全: ${endpoints.join(', ')}`);
+    ok(JSON.stringify(endpoints) === JSON.stringify(['backupPanel/status', 'backupPanel/backup', 'backupPanel/verify', 'backupPanel/restore', 'backupPanel/setAuto', 'backupPanel/githubStatus', 'backupPanel/githubSyncNow', 'backupPanel/githubPull', 'backupPanel/removeEntry', 'backupPanel/setGithubRepo', 'backupPanel/cancelSync', 'backupPanel/doctorScan', 'backupPanel/doctorRepair']), `13 个端点齐全: ${endpoints.join(', ')}`);
     ok(contrib && contrib.invocations.every((d) => d.service === 'backupPanel' && d.result.mode === 'src-json'), '描述符 service/result codec 正确');
     const panel = mock.services.find((s) => s.name === 'backupPanel');
     ok(panel !== undefined, 'backupPanel 服务已挂载');
@@ -789,7 +789,7 @@ async function main() {
     console.log('19) RPC 方法名保留字预检（#2 事故防复发，issue #9）');
     const contrib19 = mock.typertContribs[0];
     const methods19 = contrib19 ? contrib19.invocations.map((d) => d.method) : [];
-    ok(methods19.length === 12, `注册了 ${methods19.length} 个 RPC 方法（期望 12）`);
+    ok(methods19.length === 13, `注册了 ${methods19.length} 个 RPC 方法（期望 13）`);
     let reservedHit = null;
     for (const name of methods19) {
       try { assertPanelMethodAvailable('backupPanel', name); } catch { reservedHit = name; }

@@ -81,10 +81,10 @@ async function main() {
   ok(dict['settings.backupPanel']?.zh?.tab === '备份' && dict['settings.backupPanel']?.en?.tab === 'Backup', '双语文典已注册');
 
   const contribution = contributions[0];
-  ok(contribution?.package === 'dsh-backup' && contribution.descriptors.length === 10, `Remote 贡献含 ${contribution?.descriptors.length} 个端点`);
+  ok(contribution?.package === 'dsh-backup' && contribution.descriptors.length === 11, `Remote 贡献含 ${contribution?.descriptors.length} 个端点`);
 
   const endpoints = contribution.descriptors.map((d) => `${d.namespace}/${d.method}`);
-  ok(JSON.stringify(endpoints) === JSON.stringify(['backupPanel/status', 'backupPanel/backup', 'backupPanel/verify', 'backupPanel/restore', 'backupPanel/setAuto', 'backupPanel/githubStatus', 'backupPanel/githubSyncNow', 'backupPanel/githubPull', 'backupPanel/removeEntry', 'backupPanel/setGithubRepo']), `端点与宿主半边一致: ${endpoints.join(', ')}`);
+  ok(JSON.stringify(endpoints) === JSON.stringify(['backupPanel/status', 'backupPanel/backup', 'backupPanel/verify', 'backupPanel/restore', 'backupPanel/setAuto', 'backupPanel/githubStatus', 'backupPanel/githubSyncNow', 'backupPanel/githubPull', 'backupPanel/removeEntry', 'backupPanel/setGithubRepo', 'backupPanel/cancelSync']), `端点与宿主半边一致: ${endpoints.join(', ')}`);
 
   console.log('3) strict schema 解析宿主样例负载');
   const samples = {
@@ -102,6 +102,7 @@ async function main() {
     'backupPanel/githubPull': { ok: true, summary: '已拉取 1 份备份', pulled: ['dsh-x.tar.gz'], corrupt: [], total: 1 },
     'backupPanel/removeEntry': { ok: true, summary: '已删除备份: dsh-x.tar.gz' },
     'backupPanel/setGithubRepo': { ok: true, repo: 'u/backups', summary: '已设为 u/backups' },
+    'backupPanel/cancelSync': { ok: true, summary: '已请求取消「git-push」：当前这次尝试结束后立即停止重试' },
   };
   for (const d of contribution.descriptors) {
     const key = `${d.namespace}/${d.method}`;
