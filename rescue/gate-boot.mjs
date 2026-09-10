@@ -25,6 +25,9 @@ const argOf = (flag, fallback) => {
 const SPEC = argOf('--spec', '');
 const TIMEOUT_S = Number(argOf('--timeout', '120'));
 const AS_JSON = argv.includes('--json');
+// --exit-zero：无论门是否通过都退 0，把结论放在 JSON 里——给上层编排（upgradeRun）用，
+// 免得调用方还要从异常里抠结论。CLI 手工用时不要加这个参数。
+const EXIT_ZERO = argv.includes('--exit-zero');
 const PORT = Number(argOf('--port', String(13200 + Math.floor(Math.random() * 400))));
 const DSH_BIN = argOf('--dsh-bin', defaultDshBin());
 
@@ -49,7 +52,7 @@ function emit(ok, extra = {}) {
     if (out.reason) console.log(`   原因: ${out.reason}`);
     if (out.home) console.log(`   隔离 home: ${out.home}`);
   }
-  process.exit(ok ? 0 : 1);
+  process.exit(ok || EXIT_ZERO ? 0 : 1);
 }
 
 if (!SPEC) { console.error('用法: node gate-boot.mjs --spec "<install spec>" [--timeout 120] [--json]'); process.exit(2); }
