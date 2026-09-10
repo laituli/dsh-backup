@@ -136,7 +136,7 @@ ok('② RESTART.txt 已落盘', restartFile.endsWith('RESTART.txt') && fs.exists
 if (fs.existsSync(restartFile)) {
   const txt = fs.readFileSync(restartFile, 'utf8');
   ok('② RESTART.txt 含成对指令（端口结束进程 + dsh web）',
-    txt.includes('Stop-Process') && /(^|\n)dsh web(\n|$)/.test(txt) && txt.includes('http'), txt.slice(0, 160));
+    txt.includes('Stop-Process') && /(^|\n)dsh web(\n|$)/.test(txt) && txt.includes('token'), txt.slice(0, 160));
 }
 const pkg = JSON.parse(fs.readFileSync(path.join(webDir, 'package.json'), 'utf8'));
 const newSpec = String(pkg.dependencies?.[TARGET] ?? '');
