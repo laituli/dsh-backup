@@ -32,8 +32,8 @@ node dsh-backup/rescue/rescue.mjs --help
 ## 3. 恢复（数据目录在跑就别用这条，见「恢复」文档）
 
 ```bash
-# 先停宿主（面板「运维 → 重启」给出的 stop 指令，或 rescue stop）
-node <救援脚本> stop --web-port <端口>
+# 先停宿主（面板「运维 → 重启」给出的 stop 指令，或 ops.mjs stop）
+node <运维脚本 ops.mjs> stop --web-port <端口>
 
 # 校验 + 恢复（--yes 才真正写入；不带 --yes 只是预览）
 node <救援脚本> verify all --root <数据仓目录>

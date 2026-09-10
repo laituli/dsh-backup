@@ -245,8 +245,10 @@ async function main() {
 
   // ---------- 2) rescue stop 停宿主（验证 stop 子命令）----------
   const rescuePath = path.join(repoRoot, 'rescue', 'rescue.mjs');
+  // fork 增量的运维入口（stop / 停机窗口恢复编排）；恢复本身仍由上游 rescue.mjs 执行
+  const opsPath = path.join(repoRoot, 'rescue', 'ops.mjs');
   const stopEnv = { ...process.env, DSH_HOME: home };
-  const stopR = runQuiet(process.execPath, [rescuePath, 'stop', '--web-port', String(E2E_PORT)], { env: stopEnv });
+  const stopR = runQuiet(process.execPath, [opsPath, 'stop', '--web-port', String(E2E_PORT)], { env: stopEnv });
   check('rescue stop 结束宿主进程', stopR.ok === true, `${stopR.status}: ${stopR.out || stopR.err}`.slice(0, 200));
   if (hostProc) { try { hostProc.kill(); } catch { /* 已被 stop 结束 */ } hostProc = null; }
   // 关掉本进程持有的 boot.log 句柄并等端口释放——Windows 上任一句柄都会让
@@ -263,11 +265,11 @@ async function main() {
   check('现场已破坏（sessions/settings/marker 均不在）', !fs.existsSync(path.join(home, 'settings.yaml')) && !fs.existsSync(path.join(home, 'marker-ok.txt')) && !fs.existsSync(path.join(home, 'sessions')));
 
   // ---------- 4) 原样执行“面板交接指令”中的 offline 恢复 ----------
-  const offline = ['node', JSON.stringify(rescuePath), 'restore', archive, '--yes', '--root', JSON.stringify(dest)].join(' ');
+  const offline = ['node', JSON.stringify(opsPath), 'deploy-restore', archive, '--yes', '--root', JSON.stringify(dest), '--delay', '0', '--web-port', String(E2E_PORT)].join(' ');
   console.log(`[e2e-restore] 执行交接指令: ${offline}`);
   const env = { ...process.env, DSH_HOME: home };
-  const rr = runQuiet(process.execPath, [rescuePath, 'restore', archive, '--yes', '--root', dest], { env });
-  check('rescue restore --yes 恢复成功', rr.ok === true && /✅|恢复完成/.test(rr.out), `${rr.status}: ${(rr.out || rr.err).slice(0, 300)}`);
+  const rr = runQuiet(process.execPath, [opsPath, 'deploy-restore', archive, '--yes', '--root', dest, '--delay', '0', '--web-port', String(E2E_PORT)], { env });
+  check('ops.mjs deploy-restore --yes 恢复成功', rr.ok === true && /✅|恢复完成/.test(rr.out), `${rr.status}: ${(rr.out || rr.err).slice(0, 300)}`);
 
   const sessBack = fs.existsSync(path.join(home, 'sessions', '_no-cwd', 'sess-rh', 'session.jsonl.zstd'));
   const settingsBack = fs.existsSync(path.join(home, 'settings.yaml'));
