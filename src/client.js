@@ -10,7 +10,7 @@
  */
 
 import { z } from 'zod';
-import { OpsSection, OpsBackupTab, RestartTab, UpgradeTab } from './ops.jsx';
+import { OpsSection, OpsBackupTab, RestartTab, UpgradeTab, MigrateTab, InstallTab } from './ops.jsx';
 import { zh, en } from './locales.js';
 import { installPanelStyles } from './styles.js';
 import pkg from '../package.json' with { type: 'json' };
@@ -274,6 +274,25 @@ export function apply(ctx) {
     locale: NS,
     inject: () => ({ panel: panelHolder.current }),
   }, UpgradeTab)), 'dsh-backup: ops upgrade tab');
+
+  // 迁移 / 重装安装子页：迁移向导（git URL 形态）与「只加插件、不动数据」的安装页。
+  ctx.effect(() => ctx.slots.inject('dsh-backup.ops.tab', () => ctx.slots.register({
+    name: 'dsh-backup.ops.tab',
+    id: 'ops-migrate',
+    order: 40,
+    label: () => label('opsTabMigrate'),
+    locale: NS,
+    inject: () => ({ panel: panelHolder.current }),
+  }, MigrateTab)), 'dsh-backup: ops migrate tab');
+
+  ctx.effect(() => ctx.slots.inject('dsh-backup.ops.tab', () => ctx.slots.register({
+    name: 'dsh-backup.ops.tab',
+    id: 'ops-install',
+    order: 50,
+    label: () => label('opsTabInstall'),
+    locale: NS,
+    inject: () => ({ panel: panelHolder.current }),
+  }, InstallTab)), 'dsh-backup: ops install tab');
 
   ctx.inject(['remote.backupPanel'], (scope) => {
     const t = scope.locale.bind(NS);

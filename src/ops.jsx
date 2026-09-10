@@ -12,6 +12,12 @@
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import { resolveSlotLabel } from '@deepseek-ai/dsh-client-ui-slots';
 import { BackupTab } from './tab.jsx';
+// 运维参考文档「同源引用」：git 侧 docs/ops/*.md 与 UI 渲染的是同一份文本
+// （build-client 以 `.md` text loader 内联），不再各写一份差异化文案。
+import migrateDoc from '../docs/ops/migrate.zh.md';
+import installDoc from '../docs/ops/install.zh.md';
+import restoreDoc from '../docs/ops/restore.zh.md';
+import upgradeDoc from '../docs/ops/restart-upgrade.zh.md';
 
 /** 本插件在「运维」区块里声明的子页槽。 */
 export const OPS_TAB_SLOT = 'dsh-backup.ops.tab';
@@ -260,6 +266,81 @@ export function UpgradeTab({ panel, t, onBackup }) {
 }
 
 /**
+ * 迁移子页：跨机迁移向导（git URL 形态）+ 同源参考文档。
+ * 面板只负责「给出可复制指令 + 展示 git 侧那份文档」，流程本身不依赖本机绝对路径。
+ */
+export function MigrateTab({ t }) {
+  return (
+    <div className="dsb-ops-page">
+      <div className="dsb-card">
+        <h3 className="dsb-heading"><span>{t('opsMigrateTitle')}</span></h3>
+        <p className="dsb-hint">{t('opsMigrateIntro')}</p>
+        <CmdBlock
+          t={t}
+          title={t('opsMigrateCloneTitle')}
+          cmd={'git clone <数据仓 https URL>\ncd <仓库目录>\nls dsh-*.tar.gz dsh-*.tar.gz.sha256'}
+          hint={t('opsMigrateCloneHint')}
+        />
+        <CmdBlock
+          t={t}
+          title={t('opsMigrateToolTitle')}
+          cmd={'git clone https://github.com/laituli/dsh-backup.git\nnode dsh-backup/rescue/rescue.mjs --help'}
+          hint={t('opsMigrateToolHint')}
+        />
+        <CmdBlock
+          t={t}
+          title={t('opsMigrateRestoreTitle')}
+          cmd={'node <救援脚本> stop --web-port <端口>\nnode <救援脚本> verify all --root <数据仓目录>\nnode <救援脚本> restore latest --yes --root <数据仓目录>'}
+          hint={t('opsMigrateRestoreHint')}
+        />
+      </div>
+      <div className="dsb-card">
+        <h3 className="dsb-heading"><span>{t('opsDocsTitle')}</span></h3>
+        <p className="dsb-hint">{t('opsDocsHint')}</p>
+        <pre className="dsb-doc">{migrateDoc}</pre>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 重装/安装子页：只往 profile 里加插件，不碰宿主数据（与恢复备份严格区分）。
+ * 因此不需要停机窗口，也不做宿主机级验证——装完重启宿主加载即可。
+ */
+export function InstallTab({ t }) {
+  return (
+    <div className="dsb-ops-page">
+      <div className="dsb-card">
+        <h3 className="dsb-heading"><span>{t('opsInstallTitle')}</span></h3>
+        <p className="dsb-hint">{t('opsInstallIntro')}</p>
+        <CmdBlock
+          t={t}
+          title={t('opsInstallGitTitle')}
+          cmd={'dsh plugin --profile <profile> add https://github.com/laituli/dsh-backup.git'}
+          hint={t('opsInstallGitHint')}
+        />
+        <CmdBlock
+          t={t}
+          title={t('opsInstallTarballTitle')}
+          cmd={'pnpm pack\ndsh plugin --profile <profile> add <绝对路径>.tgz'}
+          hint={t('opsInstallTarballHint')}
+        />
+        <CmdBlock
+          t={t}
+          title={t('opsInstallListTitle')}
+          cmd={'dsh plugin --profile <profile> list\ndsh plugin --profile <profile> remove @xiaoyuyu6420/dsh-backup'}
+          hint={t('opsInstallListHint')}
+        />
+      </div>
+      <div className="dsb-card">
+        <h3 className="dsb-heading"><span>{t('opsDocsTitle')}</span></h3>
+        <pre className="dsb-doc">{installDoc}</pre>
+      </div>
+    </div>
+  );
+}
+
+/**
  * 渲染「运维」区块：子页导航 + 当前子页内容。
  * @param props.t 文案函数；props.renderSlot 槽渲染器；props.ctx 客户端根上下文。
  */
@@ -348,8 +429,12 @@ export function OpsSection({ t, renderSlot, ctx, panel }) {
               renderSlot(OPS_TAB_SLOT, childProps, { only: row.id })
             ) : row.id === 'ops-restart' ? (
               <RestartTab {...childProps} />
-            ) : (
+            ) : row.id === 'ops-upgrade' ? (
               <UpgradeTab {...childProps} />
+            ) : row.id === 'ops-migrate' ? (
+              <MigrateTab {...childProps} />
+            ) : (
+              <InstallTab {...childProps} />
             )}
           </div>
         );

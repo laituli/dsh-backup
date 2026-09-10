@@ -45,6 +45,7 @@ await build({
   format: 'cjs',
   platform: 'browser',
   jsx: 'automatic',
+  loader: { '.md': 'text' },
   target: 'es2022',
   sourcemap: false,
   external: PLATFORM_EXTERNALS,
