@@ -395,6 +395,114 @@ function summarizeDoctorScan(r) {
   return `${head}\n${shown.map((c) => `  ❌ ${c.rel}\n     ${c.reason}`).join('\n')}${more}`;
 }
 
+// ---------- 悬挂命令封口（与插件 /backup doctor --seal 同语义） ----------
+//
+// 场景（真实事故）：宿主在一条命令（如 /backup）执行期间被强杀，会话日志里只剩
+// `command/run`、没有配对的 `command/done`。DSH 客户端按这对记录折叠命令卡——
+// 没有 done 就**永远显示「进行中」**，还会挡住该会话后续的命令与消息。宿主自身
+// 不会自愈，只能把日志补齐。**必须先停掉 dsh**：运行中的宿主既占着文件，内存里
+// 也仍是旧状态（封口只对下一次加载生效）。
+
+/** 解析 log 行：seq 游标 + 悬挂的 command/run。 */
+function scanDangling(lines) {
+  let nextSeq = 0;
+  let lastTime = 0;
+  const runs = new Map();
+  const dones = new Set();
+  for (let i = 1; i < lines.length; i++) {
+    let rec;
+    try { rec = JSON.parse(lines[i]); } catch { continue; }
+    if (typeof rec.seq === 'number') nextSeq = rec.seq + 1;
+    else if (typeof rec.seq0 === 'number') {
+      const d = rec.data ?? {};
+      const members = Array.isArray(d.texts) ? d.texts.length : Array.isArray(d.args) ? d.args.length : 0;
+      nextSeq = rec.seq0 + members;
+    }
+    if (typeof rec.time === 'number' && rec.time > lastTime) lastTime = rec.time;
+    if (rec.type === 'command/run' && rec.data?.commandId) {
+      runs.set(rec.data.commandId, { name: String(rec.data.name ?? '?') });
+    } else if (rec.type === 'command/done' && rec.data?.commandId) {
+      dones.add(rec.data.commandId);
+    }
+  }
+  return { nextSeq, lastTime, dangling: [...runs.entries()].filter(([id]) => !dones.has(id)).map(([id, info]) => ({ commandId: id, ...info })) };
+}
+
+/** 给单个日志补 done（追加一帧 + 原子替换 + 原文件留档）。 */
+async function sealSessionLog(abs, rel, opts = {}) {
+  const raw = await fs.readFile(abs);
+  const isZstd = abs.endsWith('.zstd');
+  if (isZstd && !HAS_NODE_ZSTD) throw new Error(`运行时 Node（${process.version}）无内置 zstd，无法封口`);
+  const lines = isZstd ? decodeZstdLog(raw).lines : raw.toString('utf8').split('\n').filter(Boolean);
+  const { nextSeq, lastTime, dangling } = scanDangling(lines);
+  if (!dangling.length) return { rel, sealed: [] };
+  if (opts.dryRun) return { rel, sealed: dangling.map((d) => d.commandId), dryRun: true };
+  const at = Math.max(Date.now(), (lastTime || 0) + 1);
+  const records = dangling.map((d, i) => JSON.stringify({
+    type: 'command/done',
+    seq: nextSeq + i,
+    time: at + i,
+    data: {
+      commandId: d.commandId,
+      kind: 'error',
+      text: `已中断：宿主在 /${d.name} 执行期间被停止（多半是同步卡住时强制重启）。这张卡片在界面上会一直显示「进行中」——此记录把它按「已中断」结清。可重新执行该命令。`,
+    },
+  }));
+  const stamp = stampNow();
+  const backupPath = `${abs}.preseal-${stamp}`;
+  await fs.copyFile(abs, backupPath);
+  const appended = Buffer.from(`${records.join('\n')}\n`, 'utf8');
+  const out = isZstd ? Buffer.concat([raw, zlib.zstdCompressSync(appended)]) : Buffer.concat([raw, appended]);
+  const tmp = `${abs}.seal-${stamp}.tmp`;
+  await fs.writeFile(tmp, out);
+  try {
+    await fs.rename(tmp, abs);
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw new Error(`封口写入失败（${err && err.code ? err.code : String(err)}）：dsh 可能还在运行（先完全停止再试）。原日志未改动`);
+  }
+  const verdict = await validateSessionFile({ abs, rel });
+  return { rel, sealed: dangling.map((d) => `${d.commandId}(${d.name})`), backup: backupPath, verified: verdict.state, verifyReason: verdict.reason };
+}
+
+async function sealDanglingCommands(dshHome, opts = {}) {
+  const found = [];
+  await collectSessionLogs(dshHome, '', 0, found);
+  const now = Date.now();
+  const maxAgeMs = (opts.days ?? 14) * 86400000;
+  const results = [];
+  const skipped = [];
+  for (const f of found) {
+    let info;
+    try { info = await fs.stat(f.abs); } catch { continue; }
+    if (info.size === 0) continue;
+    if (now - info.mtimeMs > maxAgeMs) { skipped.push({ rel: f.rel, why: `超过 ${opts.days ?? 14} 天未改动` }); continue; }
+    try {
+      const r = await sealSessionLog(f.abs, f.rel, { dryRun: opts.dryRun });
+      if (r.sealed.length) results.push(r);
+    } catch (err) {
+      skipped.push({ rel: f.rel, why: err && err.message ? err.message : String(err) });
+    }
+  }
+  return { scanned: found.length, results, skipped };
+}
+
+function summarizeSeal(r, dryRun) {
+  if (!r.results.length) {
+    const tail = r.skipped.length ? `\n（跳过 ${r.skipped.length} 个：${r.skipped.slice(0, 3).map((s) => `${s.rel} — ${s.why}`).join('；')}）` : '';
+    return `✅ 未发现「只 run 没有 done」的悬挂命令（扫描 ${r.scanned} 个会话日志）${tail}`;
+  }
+  const lines = [`🩹 ${dryRun ? '（预览）' : ''}已封口 ${r.results.length} 个会话日志里的悬挂命令：`];
+  for (const x of r.results) {
+    lines.push(`  ${x.rel}`);
+    if (x.backup) lines.push(`    原日志留档: ${x.backup}`);
+    lines.push(`    命令: ${x.sealed.join(', ')}${x.verified && x.verified !== 'ok' ? `（复检异常: ${x.verifyReason}）` : ''}`);
+  }
+  if (r.skipped.length) lines.push(`  跳过 ${r.skipped.length} 个（${r.skipped.slice(0, 2).map((s) => s.why).join('；')}）`);
+  if (!dryRun) lines.push('  重启 dsh 后这些命令卡会从「进行中」变为「已中断」。');
+  return lines.join('\n');
+}
+
 // ---------- 定点修复（与插件 runDoctorRepair 同语义，含失败回滚） ----------
 
 async function doctorRepair(root, dshHome, selector) {
@@ -720,11 +828,14 @@ const HELP = `dsh-rescue —— dsh-backup 的进程外救援通道（零依赖�
   node rescue.mjs restore <前缀|latest> 恢复预览；确认无误后加 --yes 执行
   node rescue.mjs doctor                会话日志体检
   node rescue.mjs doctor --repair [前缀] 从备份定点修复损坏的会话日志
+  node rescue.mjs doctor --seal [--dry-run] 封口「只 run 没有 done」的悬挂命令
+                                        （命令卡永远显示「进行中」时用；先停止 dsh）
   node rescue.mjs serve [--port N]      同无参数：启动救援网页
 
 选项:
   --root <目录>    备份目录（缺省 = 本文件所在目录）
   --yes            restore 的执行确认
+  --dry-run        doctor --seal 只预览不改文件
   --port N         网页端口（缺省 13190）`;
 
 async function main() {
@@ -766,6 +877,12 @@ async function main() {
     return;
   }
   if (cmd === 'doctor') {
+    if (argv.includes('--seal') || argv.includes('--unstick')) {
+      const dryRun = argv.includes('--dry-run');
+      const r = await sealDanglingCommands(dshHome, { dryRun });
+      console.log(summarizeSeal(r, dryRun));
+      return;
+    }
     if (argv.includes('--repair')) {
       const r = await doctorRepair(root, dshHome, pos[1]);
       console.log(r.summary);
@@ -774,6 +891,7 @@ async function main() {
     const r = await runDoctorScan(dshHome);
     console.log(summarizeDoctorScan(r));
     if (r.corruptCount) console.log('\n修复: node rescue.mjs doctor --repair [前缀|latest]');
+    console.log('命令卡一直显示「进行中」时: node rescue.mjs doctor --seal（先停止 dsh）');
     if (r.corruptCount) process.exitCode = 1;
     return;
   }

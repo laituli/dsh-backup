@@ -157,6 +157,11 @@ export const zh = {
   netLabelPush: '推送',
   netLabelPull: '拉取',
   netLabelFetch: '取回远端索引',
+  // 后台同步任务（0.11.13：命令/面板不再等网络；进度与结论都在这行）
+  syncBgRunning: 'GitHub 同步：后台进行中，已用 ',
+  syncBgAttempt: '，第 ',
+  syncBgDone: 'GitHub 同步：后台已完成，用时 ',
+  syncBgFailed: 'GitHub 同步：后台任务失败 —— ',
   upgTitle: '前端内升级已装插件',
   upgIntro: '个人 fork 的插件靠 url#tag 升级（市场那套按钮只跟 npm 版本，跟不到你的 tag）。按钮走四步事务：先备份 → 隔离 DSH_HOME 装配门（真起一次宿主）→ 通过才写入 profile → 提示「只差冷启动」。dsh 本体不走这里，仍按上面的升级顺序。',
   upgRestartFirstTitle: '先复制这对重启指令（升级后界面可能打不开）',
@@ -358,6 +363,11 @@ export const en = {
   netRigidWindow: 's / window ',
   netRigidNext: 's, next in ',
   netRigidLastError: 'last error: ',
+  // Background sync job (0.11.13: commands/panel no longer wait on the network)
+  syncBgRunning: 'GitHub sync: running in background, elapsed ',
+  syncBgAttempt: ', attempt #',
+  syncBgDone: 'GitHub sync: background job finished in ',
+  syncBgFailed: 'GitHub sync: background job failed — ',
   netLabelPush: 'push',
   netLabelPull: 'pull',
   netLabelFetch: 'fetch remote index',

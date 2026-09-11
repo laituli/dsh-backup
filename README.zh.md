@@ -80,8 +80,15 @@ dsh plugin --profile web add github:xiaoyuyu6420/dsh-backup
 | 列出备份 | `/backup list` |
 | 校验完整性 | `/backup verify [前缀\|all]` |
 | 会话日志体检/修复 | `/backup doctor` · `--repair [前缀\|latest]` |
+| **命令卡一直转「进行中」** | 先停 dsh，再 `node rescue.mjs doctor --seal`（宿主活着时用 `/backup doctor --seal`；详见 `docs/ops/unstick.zh.md`） |
+| GitHub 同步（后台，不阻塞聊天） | `/backup sync` · `/backup github status` · `github cancel` · `github sync --wait`（显式等待） |
 | **DSH 起不来时自救** | 双击备份目录里的「点我恢复」，或 `dsh-rescue` / `node rescue.mjs` |
 | 删除 / 保留策略 | `/backup delete <前缀\|latest>` · `/backup --keep N`（默认 7） |
+
+> **v0.11.13 起：网络动作一律后台化。** `/backup`、面板「立即备份/立即同步」都**秒级返回**，
+> GitHub 推送在后台继续（进度看 `/backup github status`，可 `github cancel` 取消）。
+> 命令出口另有硬截止时间兜底（`commandDeadlineSec`，默认 180s）：即便某一步真卡死，
+> 命令也会收敛成「已超时」，绝不会再出现"命令卡永远显示进行中、同会话消息发不出去"。
 
 ## 分类型备份
 

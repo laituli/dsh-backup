@@ -79,6 +79,7 @@ function makeCtx({ home, dsh, env }) {
   const typertContribs = [];
   const services = [];
   const routes = [];
+  const disposers = [];
   let tool = null;
 
   async function resolveExecutable(name) {
@@ -139,6 +140,9 @@ function makeCtx({ home, dsh, env }) {
       return undefined;
     },
     subprocess: { resolveExecutable, spawn: spawnProc },
+    // dispose 桩：0.11.13 起网络同步后台化，测试收尾必须让它停下（否则重试定时器
+    // 会让测试进程一直不退出）。插件在 dispose 时置位取消标志、同步随即收敛。
+    on: (event, cb) => { if (event === 'dispose') disposers.push(cb); return () => {}; },
     commands: { register: (cmd) => handlers.set(cmd.name, cmd.handler) },
     tools: { register: (t) => { tool = t; } },
     interval: (fn, ms) => {
@@ -186,7 +190,7 @@ function makeCtx({ home, dsh, env }) {
       }
     },
   };
-  return { ctx, intervals, timeouts, typertContribs, services, routes, handler: (raw, signal) => handlers.get('backup')({ rawInput: raw, signal }), tool: () => tool };
+  return { ctx, intervals, timeouts, typertContribs, services, routes, dispose: () => { for (const cb of disposers) { try { cb(); } catch { /* 桩回调异常不掩盖测试结论 */ } } }, handler: (raw, signal) => handlers.get('backup')({ rawInput: raw, signal }), tool: () => tool };
 }
 
 async function listArchives(root) {
@@ -514,11 +518,34 @@ async function main() {
     });
     const mock3 = makeCtx({ home, dsh });
     plugin(mock3.ctx, { destination: config.destination, githubRepo: ghBare.split(path.sep).join('/') });
+    // 0.11.13 起网络同步**后台化**：命令/面板秒级结算，推送在后台任务里完成。
+    // 测试相应地等任务落地（观察 auto.json 的 github.lastPush/lastError），
+    // 而不是假设 push 发生在命令返回之前。
+    const readGh = async () => {
+      try { return JSON.parse(await fs.readFile(path.join(root, 'auto.json'), 'utf8')).github ?? {}; } catch { return {}; }
+    };
+    const waitFor = async (pred, ms = 30000) => {
+      const t0 = Date.now();
+      for (;;) {
+        if (await pred()) return true;
+        if (Date.now() - t0 > ms) return false;
+        await new Promise((r) => setTimeout(r, 150));
+      }
+    };
     const rSync1 = await mock3.handler('');
     ok(rSync1.kind === 'success' && rSync1.text.includes('备份完成'), '备份成功（githubRepo 已配置）');
+    ok(rSync1.text.includes('GitHub 同步'), '备份回执带同步状态行（后台任务口径）');
     const syncDir2 = path.join(home, 'Desktop', 'dsh-backups', '.github-sync');
-    ok(await fs.stat(path.join(syncDir2, '.git')).then(() => true, () => false), '同步工作树已初始化');
-    const bareLog = await gitOut(['--git-dir', ghBare, 'log', '--oneline', '-1']);
+    ok(await waitFor(async () => (await fs.stat(path.join(syncDir2, '.git')).then(() => true, () => false))), '同步工作树已初始化');
+    const syncSettled = await waitFor(async () => {
+      const gh = await readGh();
+      return Boolean(gh.lastPush) || Boolean(gh.lastError);
+    });
+    ok(syncSettled, '后台同步任务在超时内结算（lastPush 或 lastError 落地）');
+    ok(!(await readGh()).lastError, `后台同步无错误: ${(await readGh()).lastError ?? ''}`);
+    const bareLog = await waitFor(async () => (await gitOut(['--git-dir', ghBare, 'log', '--oneline', '-1'])).includes('backup'))
+      ? await gitOut(['--git-dir', ghBare, 'log', '--oneline', '-1'])
+      : '';
     ok(bareLog.includes('backup'), `bare 仓库存在同步提交: ${bareLog}`);
     const bareFiles = await gitOut(['--git-dir', ghBare, 'ls-tree', '-r', '--name-only', 'HEAD']).then((s) => s.split('\n').filter(Boolean));
     ok(bareFiles.some((f) => f.endsWith('.tar.gz')) && bareFiles.some((f) => f.endsWith('.sha256')), `归档与边车已推送（${bareFiles.length} 个文件）`);
@@ -526,26 +553,33 @@ async function main() {
     ok(await fs.readFile(path.join(syncDir2, '.gitignore'), 'utf8').then((t) => t.includes('.git-credentials')), '.gitignore 排除凭据文件');
     await fs.writeFile(path.join(syncDir2, 'junk-file.txt'), 'junk');
     await mock3.handler('github sync');
-    ok(await fs.stat(path.join(syncDir2, 'junk-file.txt')).then(() => false, () => true), '工作树杂物被镜像清理');
+    ok(await waitFor(async () => (await fs.stat(path.join(syncDir2, 'junk-file.txt')).then(() => false, () => true))), '工作树杂物被镜像清理');
     ok(!(await gitOut(['--git-dir', ghBare, 'ls-tree', '-r', '--name-only', 'HEAD'])).includes('junk-file.txt'), '杂物未进入远端');
     const st10 = JSON.parse(await fs.readFile(path.join(root, 'auto.json'), 'utf8'));
     ok(st10.github && st10.github.lastPush, 'auto.json 记录 github.lastPush');
     const stCmd = await mock3.handler('github status');
     ok(stCmd.kind === 'success' && stCmd.text.includes('gh-bare.git'), 'github status 显示仓库');
+    ok(stCmd.text.includes('GitHub 同步'), 'github status 带后台任务状态行');
     const panel2 = mock3.services.find((s) => s.name === 'backupPanel');
     const ghStatus = await panel2.githubStatus();
     ok(ghStatus.repo && ghStatus.lastPush !== null && ghStatus.syncDir.includes('.github-sync'), '面板 githubStatus 正常');
     const ghNow = await panel2.githubSyncNow(undefined);
-    ok(ghNow.ok === true && ghNow.pushed === false, '面板 githubSyncNow（无变更）ok');
+    ok(ghNow.ok === true && ghNow.background === true, '面板 githubSyncNow 立刻返回后台任务（不再挂住 RPC）');
     for (let i = 0; i < 3; i += 1) await mock3.handler('--keep 1');
+    await mock3.handler('github sync --wait'); // 轮换后显式同步一次，断言才有确定性
+    const oneArchive = await waitFor(async () => (await gitOut(['--git-dir', ghBare, 'ls-tree', '-r', '--name-only', 'HEAD'])).split('\n').filter((f) => f.endsWith('.tar.gz')).length === 1);
     const bareFiles2 = await gitOut(['--git-dir', ghBare, 'ls-tree', '-r', '--name-only', 'HEAD']).then((s) => s.split('\n').filter(Boolean));
-    ok(bareFiles2.filter((f) => f.endsWith('.tar.gz')).length === 1, `轮换删除已同步（bare 仓库剩 1 份归档，实际 ${bareFiles2.filter((f) => f.endsWith('.tar.gz')).length}）`);
+    ok(oneArchive, `轮换删除已同步（bare 仓库剩 1 份归档，实际 ${bareFiles2.filter((f) => f.endsWith('.tar.gz')).length}）`);
+    // 收尾：后台任务必须能停下（卸载面收敛），否则残留重试会让测试进程不退出
+    mock3.dispose();
 
     console.log('10b) GitHub 凭据保留（token 写入 .git-credentials，镜像清理不删）');
     const mockCred = makeCtx({ home, dsh, env: { DSH_BACKUP_GITHUB_TOKEN: 'test-token' } });
     plugin(mockCred.ctx, { destination: config.destination, githubRepo: ghBare.split(path.sep).join('/') });
     const rCred = await mockCred.handler('');
     ok(rCred.kind === 'success', '带 token 的备份成功（https 远端检查通过）');
+    // 同步已后台化：凭据文件由工作树初始化写出，断言前显式同步一次（--wait）
+    await mockCred.handler('github sync --wait');
     const credsPath = `${root}/.github-sync/.git-credentials`;
     ok(await fs.readFile(credsPath, 'utf8').then((t) => t.includes('test-token'), () => false), '.git-credentials 存在且含 test-token');
     if (!IS_WIN) {
@@ -553,7 +587,7 @@ async function main() {
       ok(credMode === 0o600, `.git-credentials 权限 0600（实际 ${credMode.toString(8)}）`);
     }
     await fs.writeFile(`${root}/.github-sync/junk-cred-test.txt`, 'junk');
-    await mockCred.handler('github sync');
+    await mockCred.handler('github sync --wait');
     ok(await fs.readFile(credsPath, 'utf8').then((t) => t.includes('test-token'), () => false), '镜像清理后凭据文件仍在（keep 集保留）');
     const bareFilesCred = await gitOut(['--git-dir', ghBare, 'ls-tree', '-r', '--name-only', 'HEAD']).then((s) => s.split('\n').filter(Boolean));
     ok(!bareFilesCred.includes('.git-credentials'), 'bare 仓库不含 .git-credentials');
@@ -717,7 +751,10 @@ async function main() {
         const redacted16 = JSON.parse(await fs.readFile(`${env16.root}/${arch16}.redacted.json`, 'utf8'));
         ok(Array.isArray(redacted16.files) && redacted16.files.includes('.credentials.yaml'), '.redacted.json 边车记录脱敏清单');
         const meta16 = JSON.parse(await fs.readFile(`${env16.root}/${arch16}.meta.json`, 'utf8'));
-        ok(typeof meta16.home === 'string' && meta16.home === env16.home && typeof meta16.host === 'string', '.meta.json 边车含主机/家目录');
+        // 路径分隔符归一后再比：插件统一写正斜杠，Windows 上原生路径是反斜杠（旧的
+        // "Windows 残项"其实是测试自身的比较口径问题）
+        const norm = (p) => String(p).replace(/\\/g, '/');
+        ok(typeof meta16.home === 'string' && norm(meta16.home) === norm(env16.home) && typeof meta16.host === 'string', '.meta.json 边车含主机/家目录');
         // 恢复（本机）：vault 自动还原凭据
         await fs.rm(env16.dsh, { recursive: true, force: true });
         const r16r = await mock16.handler('restore latest');
@@ -769,6 +806,8 @@ async function main() {
         const mockOld = makeCtx({ home: env18.home, dsh: env18.dsh });
         plugin(mockOld.ctx, { destination: `~/Desktop/dsh-backups`, githubRepo: ghBare18.split(path.sep).join('/') });
         await mockOld.handler('');
+        // 同步后台化：新机 pull 之前必须确认"旧机器"的推送真的落在远端了
+        await mockOld.handler('github sync --wait');
         const pushed18 = (await listArchives(env18.root)).slice();
         ok(pushed18.length === 1, '旧机器已推送 1 份');
         // “新机器”：同 root 但清空本地归档（模拟新机无备份），pull 拉回

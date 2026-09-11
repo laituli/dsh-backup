@@ -133,14 +133,28 @@ export function BackupTab({ panel, t }) {
   // 等待期间面板必须“动”起来——否则用户看到的正是最初那个 bug：按钮转圈、
   // 列表毫无变化。故：进度条 + 2 秒轮询 + 可取消。
   const net = snap !== null && snap !== undefined ? (snap.net ?? null) : null;
+  // 后台同步任务：0.11.13 起网络同步不再阻塞命令与按钮，进度/结果从 status.sync 读。
+  const syncJob = snap !== null && snap !== undefined ? (snap.sync ?? null) : null;
+  const syncLine = syncJob === null
+    ? null
+    : syncJob.state === 'running'
+      ? `${t('syncBgRunning')}${Math.round((syncJob.elapsedMs || 0) / 1000)}s${net !== null ? `${t('syncBgAttempt')}${net.attempt + 1}` : ''}`
+      : syncJob.state === 'error'
+        ? `${t('syncBgFailed')}${syncJob.error || ''}`
+        : syncJob.state === 'done'
+          ? `${t('syncBgDone')}${Math.round((syncJob.elapsedMs || 0) / 1000)}s`
+          : null;
   const netLabelText = (label) => t(label === 'git-push' ? 'netLabelPush'
     : label === 'git-pull-fetch' ? 'netLabelPull' : 'netLabelFetch');
   const cancelSync = () => { void run('cancel-sync', () => panel.cancelSync()); };
+  // 轮询条件：①面板正在跑一次同步/拉取 RPC；②**后台任务还在跑**（0.11.13 起网络
+  // 动作转后台，RPC 立刻返回——不盯后台任务的话，用户就看不到进度变化了）。
+  const backgroundRunning = syncJob !== null && syncJob.state === 'running';
   useEffect(() => {
-    if (busy !== 'github-sync' && busy !== 'github-pull') return undefined;
+    if (busy !== 'github-sync' && busy !== 'github-pull' && !backgroundRunning) return undefined;
     const timer = setInterval(() => { setRequest(v => v + 1); }, 2000);
     return () => clearInterval(timer);
-  }, [busy]);
+  }, [busy, backgroundRunning]);
 
   // 将服务端返回的 settings 数据同步到所有输入状态
   const applySettings = (data) => {
@@ -429,6 +443,9 @@ export function BackupTab({ panel, t }) {
           <button type="button" className="dsb-btn-secondary" onClick={reload}>{t('retry')}</button>
         </div>
       ) : null}
+      {snap !== null && snap.errorSummary ? (
+        <p className="dsb-banner" role="alert" data-ok="false" data-status-error="true">{snap.errorSummary}</p>
+      ) : null}
       {snap !== null ? (
         <>
           <div className="dsb-card">
@@ -680,6 +697,9 @@ export function BackupTab({ panel, t }) {
                   {`${t('netRigidPrefix')}${netLabelText(net.label)}${t('netRigidAttempt')}${net.attempt}${t('netRigidUsed')}${Math.round((net.elapsedMs || 0) / 1000)}s${t('netRigidWindow')}${Math.round((net.windowMs || 0) / 1000)}s${net.nextDelayMs ? `${t('netRigidNext')}${Math.round(net.nextDelayMs / 1000)}s` : ''}`}
                   {net.lastError ? `　${t('netRigidLastError')}${net.lastError}` : ''}
                 </p>
+              ) : null}
+              {syncLine !== null ? (
+                <p className="dsb-hint" role="status" data-sync={syncJob.state}>{syncLine}</p>
               ) : null}
             </div>
           ) : null}

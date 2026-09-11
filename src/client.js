@@ -87,6 +87,17 @@ const statusSchema = z.object({
     lastError: z.string().nullable(),
     at: z.string(),
   }).nullable().optional(),
+  // 后台同步任务（0.11.13：网络同步不再阻塞命令/面板，状态在这里）
+  sync: z.object({
+    state: z.string(),
+    reason: z.string(),
+    startedAt: z.string(),
+    elapsedMs: z.number().int(),
+    finishedAt: z.string().nullable(),
+    error: z.string().nullable(),
+  }).nullable().optional(),
+  // 宿主读状态失败时的降级说明（面板据此显示一行错误，而不是空白/永久转圈）
+  errorSummary: z.string().nullable().optional(),
 });
 
 const backupSchema = z.object({

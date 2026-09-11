@@ -9,7 +9,13 @@
  * 断言链：upgradePlan 读到 git 源与远端最新 tag → upgradeRun 走
  * 备份 → RESTART.txt → 装配门 → 写入 profile → 包版本真的变了 → RESTART.txt 内容可用。
  *
- * 用法: node scripts/verify-upgrade-flow.mjs [--port 13180] [--from v0.1.1] [--to v0.1.3]
+ * 用法: node scripts/verify-upgrade-flow.mjs [--port 13180] [--from v0.1.2] [--to v0.1.3]
+ *
+ * 注意 --from 的选择：必须是**能装得起来**的旧版本。dsh-personal-workflow v0.1.1
+ * 会在装配期直接抛 `cannot get property "skills" without inject`（这正是 v0.1.2
+ * 修掉的 bug），拿它当起点的话隔离宿主根本起不来，断言链会停在第一步——那不是
+ * 升级流程的问题，是起点本身不可启动。要复现"坏版本也能被升级救回来"，
+ * 用 --from v0.1.1 并预期第一步失败。
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,12 +26,12 @@ const SELF = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z
 const argv = process.argv.slice(2);
 const argOf = (f, d) => { const i = argv.indexOf(f); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const PORT = Number(argOf('--port', '13180'));
-const FROM = argOf('--from', 'v0.1.1');
+const FROM = argOf('--from', 'v0.1.2');
 const TO = argOf('--to', 'v0.1.3');
 const TARGET = 'dsh-personal-workflow';
 const WF_REPO = argOf('--wf-repo', 'C:/Users/lai/Documents/GitHub/dsh/dsh-personal-workflow');
 const BACKUP_REPO = argOf('--backup-repo', 'C:/Users/lai/dev/dsh-backup');
-const BACKUP_TAG = argOf('--backup-tag', 'v0.11.11');
+const BACKUP_TAG = argOf('--backup-tag', 'v0.11.12');
 const DSH_BIN = argOf('--dsh-bin', 'C:/Users/lai/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/lib/bin.js');
 
 const results = [];
@@ -45,12 +51,31 @@ function extract(repo, tag, destRoot) {
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-vupg-'));
 const backupPkg = extract(BACKUP_REPO, BACKUP_TAG, stage);
 const wfOld = extract(WF_REPO, FROM, stage);
-// 依赖 peers：解出来的 dsh-backup 目录不在 pnpm 布局里，借用商店已解析好的 peer 目录
-const storePeers = (() => {
-  try { return path.join(fs.realpathSync(path.join(os.homedir(), '.dsh', 'profiles', 'web', 'node_modules', '@xiaoyuyu6420', 'dsh-backup')), '..', '..'); } catch { return null; }
+// 依赖 peers：解出来的 dsh-backup 目录不在 pnpm 布局里，借用已解析好的 peer 目录。
+// 候选按"稳定度"排序——**不能只依赖真实 profile 里装着本插件**：用户一旦把插件
+// 卸掉/回退（正是本次要验证的场景），旧写法会拿不到 peers，隔离宿主直接以
+// ERR_MODULE_NOT_FOUND 起不来，看起来像"门挂了"，其实是取 peers 的路径失效。
+const PEER_CANDIDATES = (() => {
+  const home = os.homedir();
+  const list = [];
+  try {
+    const installed = fs.realpathSync(path.join(home, '.dsh', 'profiles', 'web', 'node_modules', '@xiaoyuyu6420', 'dsh-backup'));
+    list.push(path.join(installed, '..', '..'));
+  } catch { /* 真实 profile 未装本插件：走下面的稳定来源 */ }
+  for (const p of [
+    path.join(home, '.dsh', 'profiles', 'node_modules'),
+    path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules'),
+    path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules'),
+  ]) if (p) list.push(p);
+  return list;
 })();
-if (storePeers && fs.existsSync(path.join(storePeers, '@deepseek-ai'))) {
+const storePeers = PEER_CANDIDATES.find((p) => {
+  try { return fs.existsSync(path.join(p, '@deepseek-ai', 'dsh-tools')); } catch { return false; }
+}) ?? null;
+if (storePeers) {
   fs.symlinkSync(storePeers, path.join(backupPkg, 'node_modules'), 'junction');
+} else {
+  console.error('[vupg] ⚠️ 找不到 peer 依赖目录（@deepseek-ai/dsh-tools），隔离宿主可能起不来；候选: ' + PEER_CANDIDATES.join(' | '));
 }
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-vupg-home-'));
