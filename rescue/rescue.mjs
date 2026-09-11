@@ -879,7 +879,8 @@ async function main() {
   if (cmd === 'doctor') {
     if (argv.includes('--seal') || argv.includes('--unstick')) {
       const dryRun = argv.includes('--dry-run');
-      const r = await sealDanglingCommands(dshHome, { dryRun });
+      const force = argv.includes('--force');
+      const r = await sealDanglingCommands(dshHome, { dryRun, force });
       console.log(summarizeSeal(r, dryRun));
       return;
     }
